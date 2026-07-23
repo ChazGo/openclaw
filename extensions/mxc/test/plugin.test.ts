@@ -1,9 +1,15 @@
+import path from "node:path";
 import type {
   OpenClawPluginApi,
   OpenClawPluginService,
   OpenClawPluginServiceContext,
 } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  PluginStateKeyedStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { MemoryKeyedStore, MemorySyncKeyedStore } from "./policy-test-helpers.js";
 
 const {
   assertMxcReadinessMock,
@@ -56,7 +62,13 @@ const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
 type MxcPluginApiForTest = Pick<
   OpenClawPluginApi,
-  "pluginConfig" | "registerService" | "registrationMode"
+  | "logger"
+  | "on"
+  | "pluginConfig"
+  | "registerCli"
+  | "registerService"
+  | "registrationMode"
+  | "runtime"
 >;
 
 const nonFullRegistrationModes = [
@@ -94,9 +106,24 @@ function createApi(
     services.push(service);
   });
   const api = {
+    logger: {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    },
+    on: vi.fn(),
     pluginConfig,
+    registerCli: vi.fn(),
     registrationMode,
     registerService,
+    runtime: {
+      state: {
+        openKeyedStore: <T>() => new MemoryKeyedStore<T>() as PluginStateKeyedStore<T>,
+        openSyncKeyedStore: <T>() => new MemorySyncKeyedStore<T>() as PluginStateSyncKeyedStore<T>,
+        resolveStateDir: () => "C:\\openclaw-state",
+      },
+    } as OpenClawPluginApi["runtime"],
   } satisfies MxcPluginApiForTest;
 
   return {
@@ -170,6 +197,9 @@ describe("registerMxcPlugin", () => {
       expect.objectContaining({
         timeoutSeconds: 60,
       }),
+      expect.anything(),
+      expect.anything(),
+      path.join("C:\\openclaw-state", "state"),
     );
     expect(registerSandboxBackendMock).toHaveBeenCalledWith("mxc", {
       factory: factoryMock,

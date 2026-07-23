@@ -1,9 +1,15 @@
+import path from "node:path";
 import type { OpenClawPluginApi, OpenClawPluginService } from "openclaw/plugin-sdk/plugin-entry";
 import { registerSandboxBackend } from "openclaw/plugin-sdk/sandbox";
 import { resolveMxcBinaryPath } from "./binary-resolver.js";
 import { resolveConfig } from "./config.js";
 import { createMxcSandboxBackendFactory } from "./mxc-backend-factory.js";
 import { mxcSandboxBackendManager } from "./mxc-backend.js";
+import { MxcPolicyAudit } from "./policy-audit.js";
+import { openMxcPolicyAuthorizationStore } from "./policy-authorization.js";
+import { registerMxcPolicyCli } from "./policy-cli.js";
+import { registerMxcPolicyHooks } from "./policy-hooks.js";
+import { openMxcPolicyStore } from "./policy-store.js";
 import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "./readiness.js";
 
 export function registerMxcPlugin(api: OpenClawPluginApi): void {
@@ -12,6 +18,12 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   }
 
   const config = resolveConfig(api.pluginConfig);
+  const stateDir = api.runtime.state.resolveStateDir(process.env);
+  const store = openMxcPolicyStore((options) => api.runtime.state.openKeyedStore(options));
+  const authorizationStore = openMxcPolicyAuthorizationStore((options) =>
+    api.runtime.state.openSyncKeyedStore(options),
+  );
+  registerMxcPolicyCli(api, () => store);
 
   if (process.platform !== "win32") {
     console.warn(
@@ -37,9 +49,26 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   // directory-access ACEs, which only degrades in-sandbox directory listing.
   warnMxcHostPrepIfNeeded();
 
+  const audit = new MxcPolicyAudit({
+    logPath: config.auditLogPath ?? path.join(stateDir, "logs", "mxc-policy.jsonl"),
+    warn: (message) => api.logger.warn(message),
+  });
+  registerMxcPolicyHooks({
+    api,
+    getConfig: () => resolveConfig(api.pluginConfig),
+    store,
+    authorizationStore,
+    audit,
+  });
+
   // Register the backend
   const unregister = registerSandboxBackend("mxc", {
-    factory: createMxcSandboxBackendFactory(config),
+    factory: createMxcSandboxBackendFactory(
+      config,
+      authorizationStore,
+      store,
+      path.join(stateDir, "state"),
+    ),
     manager: mxcSandboxBackendManager,
   });
 
@@ -51,6 +80,7 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
     },
     stop() {
       unregister();
+      return audit.flush();
     },
   };
   api.registerService(cleanupService);

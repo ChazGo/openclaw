@@ -1,7 +1,7 @@
 /** Tests before-tool-call hook ordering, mutation, and cancellation behavior. */
 import { beforeEach, describe, expect, it } from "vitest";
 import { createHookRunner } from "./hooks.js";
-import { addStaticTestHooks } from "./hooks.test-fixtures.js";
+import { addStaticTestHooks, addTestHook } from "./hooks.test-fixtures.js";
 import { createEmptyPluginRegistry, type PluginRegistry } from "./registry.js";
 import type { PluginHookToolContext } from "./types.js";
 import type { PluginHookBeforeToolCallResult } from "./types.js";
@@ -252,5 +252,48 @@ describe("before_tool_call hook merger — requireApproval", () => {
   ] as const)("$name", async ({ hooks, expected }) => {
     const result = await runBeforeToolCallWithHooks(registry, hooks);
     expectRequireApprovalResult(result, expected);
+  });
+
+  it("passes every accumulated parameter rewrite to a terminal-priority hook", async () => {
+    const observed: Array<Record<string, unknown>> = [];
+    const observedDerivedPaths: Array<readonly string[] | undefined> = [];
+    addTestHook({
+      registry,
+      pluginId: "normalizer",
+      hookName: "before_tool_call",
+      priority: 100,
+      handler: () => ({ params: { command: "normalized" } }),
+    });
+    addTestHook({
+      registry,
+      pluginId: "late-normalizer",
+      hookName: "before_tool_call",
+      priority: Number.MIN_SAFE_INTEGER,
+      handler: () => ({ params: { command: "late-normalized" } }),
+    });
+    addTestHook({
+      registry,
+      pluginId: "policy",
+      hookName: "before_tool_call",
+      priority: Number.NEGATIVE_INFINITY,
+      handler: (event) => {
+        observed.push(event.params);
+        observedDerivedPaths.push(event.derivedPaths);
+        return { params: event.params };
+      },
+    });
+
+    const result = await createHookRunner(registry).runBeforeToolCall(
+      {
+        toolName: "bash",
+        params: { command: "original" },
+        derivedPaths: ["stale-path"],
+      },
+      stubCtx,
+    );
+
+    expect(observed).toEqual([{ command: "late-normalized" }]);
+    expect(observedDerivedPaths).toEqual([undefined]);
+    expect(result?.params).toEqual({ command: "late-normalized" });
   });
 });

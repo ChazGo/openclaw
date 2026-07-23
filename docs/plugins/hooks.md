@@ -51,6 +51,8 @@ export default definePluginEntry({
 
 Handlers that can return decisions or modifications run sequentially in
 descending `priority`; same-priority handlers keep registration order.
+For `before_tool_call`, each `params` rewrite becomes the input seen by the
+next lower-priority handler.
 Observation-only handlers run in parallel, and fire-and-forget observation
 dispatches can overlap with later events. Do not use priority to order
 observation side effects.
@@ -270,7 +272,9 @@ Guard behavior for typed lifecycle hooks:
 
 - `block: true` is terminal and skips lower-priority handlers.
 - `block: false` is treated as no decision.
-- `params` rewrites the tool parameters for execution.
+- `params` rewrites the tool parameters for execution and for lower-priority
+  `before_tool_call` handlers. This lets a low-priority policy hook evaluate
+  the final parameters produced by earlier normalization hooks.
 - `requireApproval` pauses the agent run and asks the user through plugin
   approvals. `/approve` can approve both exec and plugin approvals. In Codex
   app-server report-mode native `PreToolUse` relays, this defers to the

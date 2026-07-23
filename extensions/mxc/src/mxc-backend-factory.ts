@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import type { CreateSandboxBackendParams, SandboxBackendHandle } from "openclaw/plugin-sdk/sandbox";
 import type { MxcConfig } from "./config.js";
 import { createMxcSandboxBackendHandle } from "./mxc-backend.js";
+import {
+  createMemoryMxcPolicyAuthorizationStore,
+  type MxcPolicyAuthorizationStore,
+} from "./policy-authorization.js";
+import type { MxcPolicyStore } from "./policy-store.js";
 
 function sanitizeRuntimeId(value: string): string {
   const slug = value
@@ -14,7 +19,12 @@ function sanitizeRuntimeId(value: string): string {
 }
 
 /** Factory function called by OpenClaw when sandbox.backend=mxc. */
-export function createMxcSandboxBackendFactory(config: MxcConfig) {
+export function createMxcSandboxBackendFactory(
+  config: MxcConfig,
+  authorizationStore = createMemoryMxcPolicyAuthorizationStore(),
+  policyStore?: MxcPolicyStore,
+  policyStateDir?: string,
+) {
   return async function createMxcSandboxBackend(
     params: CreateSandboxBackendParams,
   ): Promise<SandboxBackendHandle> {
@@ -29,6 +39,9 @@ export function createMxcSandboxBackendFactory(config: MxcConfig) {
       agentWorkspaceDir: params.agentWorkspaceDir,
       ...(params.skillsWorkspaceDir ? { skillsWorkspaceDir: params.skillsWorkspaceDir } : {}),
       workspaceAccess: params.cfg.workspaceAccess,
+      ...(policyStateDir ? { policyStateDir } : {}),
+      authorizationStore,
+      policyStore,
     });
   };
 }

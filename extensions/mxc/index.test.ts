@@ -7,6 +7,7 @@ describe("mxc plugin entry", () => {
     expect(manifest.activation).toEqual({
       onStartup: false,
       onConfigPaths: ["plugins.entries.mxc"],
+      onCommands: ["mxc"],
     });
   });
 

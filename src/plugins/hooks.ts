@@ -168,6 +168,10 @@ type ModifyingHookPolicy<K extends PluginHookName, TResult> = {
     next: TResult,
     registration: PluginHookRegistration<K>,
   ) => TResult;
+  nextEvent?: (
+    event: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[0],
+    accumulated: TResult,
+  ) => Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[0];
   mergeNullResults?: boolean;
   shouldStop?: (result: TResult) => boolean;
   terminalLabel?: string;
@@ -582,11 +586,12 @@ export function createHookRunner(
     logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers, sequential)`);
 
     let result: TResult | undefined;
+    let currentEvent = event;
 
     for (const hook of hooks) {
       try {
         const handler = hook.handler as (event: unknown, ctx: unknown) => Promise<TResult>;
-        const promise = Promise.resolve(handler(event, ctx));
+        const promise = Promise.resolve(handler(currentEvent, ctx));
         const timeoutMs = getModifyingHookTimeoutMs(hookName, hook);
         const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
 
@@ -597,6 +602,9 @@ export function createHookRunner(
             result = policy.mergeResults(result, handlerResult, hook);
           } else {
             result = handlerResult;
+          }
+          if (result && policy.nextEvent) {
+            currentEvent = policy.nextEvent(currentEvent, result);
           }
           if (result && policy.shouldStop?.(result)) {
             const terminalLabel = policy.terminalLabel ? ` ${policy.terminalLabel}` : "";
@@ -1203,6 +1211,13 @@ export function createHookRunner(
                 ? { ...next.requireApproval, pluginId: reg.pluginId }
                 : undefined),
           };
+        },
+        nextEvent: (currentEvent, accumulated) => {
+          if (!accumulated.params) {
+            return currentEvent;
+          }
+          const { derivedPaths: _staleDerivedPaths, ...eventWithoutDerivedPaths } = currentEvent;
+          return { ...eventWithoutDerivedPaths, params: accumulated.params };
         },
         shouldStop: (result) => result.block === true,
         terminalLabel: "block=true",

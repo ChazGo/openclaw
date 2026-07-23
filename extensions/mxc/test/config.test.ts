@@ -10,6 +10,10 @@ describe("resolveConfig", () => {
       network: "none",
       timeoutSeconds: 120,
       debug: false,
+      localPolicyEnabled: true,
+      localPolicyAutoApprove: false,
+      approvalTimeoutMs: 600_000,
+      approvalSeverity: "warning",
     });
 
     const config = resolveConfig({});
@@ -20,6 +24,11 @@ describe("resolveConfig", () => {
       timeoutSeconds: 120,
       debug: false,
       mxcPolicyPaths: undefined,
+      localPolicyEnabled: true,
+      localPolicyAutoApprove: false,
+      approvalTimeoutMs: 600_000,
+      approvalSeverity: "warning",
+      auditLogPath: undefined,
     });
     expect(config).not.toHaveProperty("timeoutSecondsConfigured");
   });
@@ -35,6 +44,11 @@ describe("resolveConfig", () => {
         "  C:\\ProgramData\\openclaw\\mxc-machine-policy.json  ",
         "  /opt/openclaw/mxc-user-policy.json  ",
       ],
+      localPolicyEnabled: false,
+      localPolicyAutoApprove: true,
+      approvalTimeoutMs: 30_000,
+      approvalSeverity: "critical",
+      auditLogPath: "C:\\ProgramData\\openclaw\\mxc-policy.jsonl",
     });
 
     expect(config).toEqual({
@@ -48,6 +62,11 @@ describe("resolveConfig", () => {
         "C:\\ProgramData\\openclaw\\mxc-machine-policy.json",
         "/opt/openclaw/mxc-user-policy.json",
       ],
+      localPolicyEnabled: false,
+      localPolicyAutoApprove: true,
+      approvalTimeoutMs: 30_000,
+      approvalSeverity: "critical",
+      auditLogPath: "C:\\ProgramData\\openclaw\\mxc-policy.jsonl",
     });
   });
 
@@ -75,6 +94,14 @@ describe("resolveConfig", () => {
     expect(() => resolveConfig({ network: "allow-all" })).toThrow(/network/u);
     expect(() => resolveConfig({ debug: "true" })).toThrow(/debug/u);
     expect(() => resolveConfig({ mxcBinaryPath: "   " })).toThrow(/mxcBinaryPath/u);
+    expect(() => resolveConfig({ localPolicyEnabled: "true" })).toThrow(/localPolicyEnabled/u);
+    expect(() => resolveConfig({ localPolicyAutoApprove: "true" })).toThrow(
+      /localPolicyAutoApprove/u,
+    );
+    expect(() => resolveConfig({ approvalTimeoutMs: 0 })).toThrow(/approvalTimeoutMs/u);
+    expect(() => resolveConfig({ approvalTimeoutMs: 600_001 })).toThrow(/approvalTimeoutMs/u);
+    expect(() => resolveConfig({ approvalSeverity: "high" })).toThrow(/approvalSeverity/u);
+    expect(() => resolveConfig({ auditLogPath: "relative.jsonl" })).toThrow(/auditLogPath/u);
   });
 
   test("enforces timeout bounds and only marks configured timeouts when supplied", () => {

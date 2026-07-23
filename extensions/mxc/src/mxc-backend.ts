@@ -21,6 +21,11 @@ import {
   resolveMxcWorkspaceContext,
 } from "./mxc-container-config.js";
 import { resolveMxcLauncherPath } from "./plugin-root.js";
+import {
+  createMemoryMxcPolicyAuthorizationStore,
+  type MxcPolicyAuthorizationStore,
+} from "./policy-authorization.js";
+import { computeMxcPolicyRuleFingerprint, type MxcPolicyStore } from "./policy-store.js";
 import { resolveSandboxTempDir, type BaselineHostEnv } from "./sandbox-baseline.js";
 import { loadSandboxBaselinePolicy } from "./sandbox-policy-loader.js";
 import { createWindowsCommandBridge } from "./windows-command.js";
@@ -186,8 +191,12 @@ export function createMxcSandboxBackendHandle(params: {
   agentWorkspaceDir?: string;
   skillsWorkspaceDir?: string;
   workspaceAccess?: MxcWorkspaceAccess;
+  policyStateDir?: string;
+  authorizationStore?: MxcPolicyAuthorizationStore;
+  policyStore?: MxcPolicyStore;
 }): SandboxBackendHandle {
   const baseline = loadSandboxBaselinePolicy({ policyPaths: params.config.mxcPolicyPaths });
+  const authorizationStore = params.authorizationStore ?? createMemoryMxcPolicyAuthorizationStore();
 
   return {
     id: "mxc",
@@ -197,6 +206,31 @@ export function createMxcSandboxBackendHandle(params: {
     capabilities: {},
 
     async buildExecSpec({ command, workdir, env, usePty }): Promise<SandboxBackendExecSpec> {
+      const authorization = await authorizationStore.consumeWhenApproved({ command, env });
+      if (params.config.localPolicyEnabled && !params.policyStore) {
+        throw new Error("MXC policy store is unavailable");
+      }
+      if (params.config.localPolicyEnabled && !authorization.authorization) {
+        throw new Error("MXC policy authorization is missing or expired");
+      }
+      if (authorization.authorization && params.policyStore) {
+        const policyRule = authorization.authorization.policyRule;
+        const currentMatch = await params.policyStore.lookup(
+          "exec",
+          authorization.authorization.argsHash,
+        );
+        const currentFingerprint = currentMatch
+          ? computeMxcPolicyRuleFingerprint(currentMatch.rule)
+          : undefined;
+        const authorizationIsCurrent = policyRule
+          ? currentMatch?.rule.argsHash === policyRule.argsHash &&
+            currentFingerprint !== undefined &&
+            policyRule.acceptedFingerprints.includes(currentFingerprint)
+          : currentMatch === undefined;
+        if (!authorizationIsCurrent) {
+          throw new Error("MXC policy authorization is stale");
+        }
+      }
       const effectiveWorkdir = resolveWorkdirInsideWorkspace(
         params.workdir,
         workdir ?? params.workdir,
@@ -217,7 +251,9 @@ export function createMxcSandboxBackendHandle(params: {
           sandboxTempDir,
           workdir: runtimeWorkdir,
           workspace,
-          env,
+          ...(params.policyStateDir ? { policyStateDir: params.policyStateDir } : {}),
+          env: authorization.env,
+          policyEnvelope: authorization.authorization?.envelope,
         });
 
         // Spawn via a plugin-side Node launcher that calls
@@ -287,6 +323,7 @@ export function createMxcSandboxBackendHandle(params: {
           sandboxTempDir,
           workdir: runtimeWorkdir,
           workspace,
+          policyStateDir: params.policyStateDir,
           env: {},
         });
 
