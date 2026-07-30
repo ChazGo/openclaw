@@ -3,10 +3,10 @@ import type { CreateSandboxBackendParams, SandboxBackendHandle } from "openclaw/
 import type { MxcConfig } from "./config.js";
 import { createMxcSandboxBackendHandle } from "./mxc-backend.js";
 import {
-  createMemoryMxcPolicyAuthorizationStore,
-  type MxcPolicyAuthorizationStore,
-} from "./policy-authorization.js";
-import type { MxcPolicyStore } from "./policy-store.js";
+  createMemoryMxcSandboxConfigurationAuthorizationStore,
+  type MxcSandboxConfigurationAuthorizationStore,
+} from "./sandbox-configuration-authorization.js";
+import type { MxcSandboxConfigurationStore } from "./sandbox-configuration-store.js";
 
 function sanitizeRuntimeId(value: string): string {
   const slug = value
@@ -21,9 +21,9 @@ function sanitizeRuntimeId(value: string): string {
 /** Factory function called by OpenClaw when sandbox.backend=mxc. */
 export function createMxcSandboxBackendFactory(
   config: MxcConfig,
-  authorizationStore = createMemoryMxcPolicyAuthorizationStore(),
-  policyStore?: MxcPolicyStore,
-  policyStateDir?: string,
+  authorizationStore = createMemoryMxcSandboxConfigurationAuthorizationStore(),
+  sandboxConfigurationStore?: MxcSandboxConfigurationStore,
+  protectedStateDir?: string,
 ) {
   return async function createMxcSandboxBackend(
     params: CreateSandboxBackendParams,
@@ -39,9 +39,9 @@ export function createMxcSandboxBackendFactory(
       agentWorkspaceDir: params.agentWorkspaceDir,
       ...(params.skillsWorkspaceDir ? { skillsWorkspaceDir: params.skillsWorkspaceDir } : {}),
       workspaceAccess: params.cfg.workspaceAccess,
-      ...(policyStateDir ? { policyStateDir } : {}),
+      ...(protectedStateDir ? { protectedStateDir } : {}),
       authorizationStore,
-      policyStore,
+      sandboxConfigurationStore,
     });
   };
 }

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { MxcPolicyAudit } from "../src/policy-audit.js";
+import { MxcSandboxConfigurationAudit } from "../src/sandbox-configuration-audit.js";
 
 const tempDirs: string[] = [];
 
@@ -10,12 +10,12 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })));
 });
 
-describe("MxcPolicyAudit", () => {
-  test("writes serialized metadata without error text", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "mxc-policy-audit-"));
+describe("MxcSandboxConfigurationAudit", () => {
+  test("writes requested access metadata without error text", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "mxc-sandbox-audit-"));
     tempDirs.push(dir);
     const logPath = path.join(dir, "audit.jsonl");
-    const audit = new MxcPolicyAudit({ logPath });
+    const audit = new MxcSandboxConfigurationAudit({ logPath });
     const call = {
       toolName: "exec",
       argsHash: "hash-only",
@@ -25,7 +25,10 @@ describe("MxcPolicyAudit", () => {
     };
 
     audit.emitRequested(call);
-    audit.emitDecision(call, "allow", "exact");
+    audit.emitSelected(call, "exact", {
+      networkEnabled: false,
+      readonlyPaths: ["C:\\source"],
+    });
     audit.emitCompleted({ ...call, durationMs: 12, error: "secret failure details" });
     await audit.flush();
 
@@ -35,15 +38,20 @@ describe("MxcPolicyAudit", () => {
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(entries).toHaveLength(3);
+    expect(entries[1]).toMatchObject({
+      source: "exact",
+      requestedAccess: { networkEnabled: false, readonlyPathCount: 1 },
+    });
     expect(entries[2]).toMatchObject({ success: false, durationMs: 12 });
     expect(text).not.toContain("secret failure details");
+    expect(text).not.toContain("C:\\source");
   });
 
   test("warns instead of rejecting when the audit path cannot be written", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "mxc-policy-audit-"));
+    const dir = await mkdtemp(path.join(os.tmpdir(), "mxc-sandbox-audit-"));
     tempDirs.push(dir);
     const warn = vi.fn();
-    const audit = new MxcPolicyAudit({ logPath: dir, warn });
+    const audit = new MxcSandboxConfigurationAudit({ logPath: dir, warn });
 
     audit.emitRequested({ toolName: "read", argsHash: "hash" });
     await expect(audit.flush()).resolves.toBeUndefined();

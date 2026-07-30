@@ -15,7 +15,7 @@ describe("mxc plugin entry", () => {
     expect(plugin.id).toBe(manifest.id);
     expect(plugin.name).toBe(manifest.name);
     expect(plugin.description).toBe(
-      "OS-level sandboxed tool execution via MXC: runs commands in a Windows ProcessContainer with configured MXC policy files.",
+      "OS-level sandboxed tool execution via MXC with static policy files and per-tool sandbox configurations.",
     );
   });
 

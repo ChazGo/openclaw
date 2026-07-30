@@ -1,5 +1,5 @@
-/** MXC containment restrictions attached to an allowed tool policy. */
-export type MxcExecutionEnvelope = {
+/** MXC containment settings selected for one tool call. */
+export type MxcSandboxConfigurationEnvelope = {
   timeoutSeconds?: number;
   networkEnabled?: boolean;
   allowLocalNetwork?: boolean;
@@ -9,7 +9,7 @@ export type MxcExecutionEnvelope = {
   readwritePaths?: string[];
 };
 
-const ENVELOPE_KEYS = new Set<keyof MxcExecutionEnvelope>([
+const ENVELOPE_KEYS = new Set<keyof MxcSandboxConfigurationEnvelope>([
   "timeoutSeconds",
   "networkEnabled",
   "allowLocalNetwork",
@@ -31,19 +31,21 @@ function parseStringArray(
     !Array.isArray(value) ||
     value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)
   ) {
-    throw new Error(`MXC policy envelope ${key} must be an array of non-empty strings`);
+    throw new Error(`MXC sandbox configuration ${key} must be an array of non-empty strings`);
   }
   return [...new Set(value.map((entry) => entry.trim()))];
 }
 
-export function parseMxcExecutionEnvelope(value: unknown): MxcExecutionEnvelope {
+export function parseMxcSandboxConfigurationEnvelope(
+  value: unknown,
+): MxcSandboxConfigurationEnvelope {
   if (value == null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("MXC policy envelope must be an object");
+    throw new Error("MXC sandbox configuration must be an object");
   }
   const envelope = value as Record<string, unknown>;
   for (const key of Object.keys(envelope)) {
-    if (!ENVELOPE_KEYS.has(key as keyof MxcExecutionEnvelope)) {
-      throw new Error(`Unknown MXC policy envelope field: ${key}`);
+    if (!ENVELOPE_KEYS.has(key as keyof MxcSandboxConfigurationEnvelope)) {
+      throw new Error(`Unknown MXC sandbox configuration field: ${key}`);
     }
   }
   if (
@@ -52,15 +54,15 @@ export function parseMxcExecutionEnvelope(value: unknown): MxcExecutionEnvelope 
       !Number.isFinite(envelope.timeoutSeconds) ||
       envelope.timeoutSeconds <= 0)
   ) {
-    throw new Error("MXC policy envelope timeoutSeconds must be a positive number");
+    throw new Error("MXC sandbox configuration timeoutSeconds must be a positive number");
   }
   for (const key of ["networkEnabled", "allowLocalNetwork"] as const) {
     if (envelope[key] !== undefined && typeof envelope[key] !== "boolean") {
-      throw new Error(`MXC policy envelope ${key} must be a boolean`);
+      throw new Error(`MXC sandbox configuration ${key} must be a boolean`);
     }
   }
 
-  const parsed: MxcExecutionEnvelope = {};
+  const parsed: MxcSandboxConfigurationEnvelope = {};
   if (typeof envelope.timeoutSeconds === "number") {
     parsed.timeoutSeconds = envelope.timeoutSeconds;
   }

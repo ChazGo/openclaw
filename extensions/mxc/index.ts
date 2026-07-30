@@ -6,7 +6,7 @@ export default definePluginEntry({
   id: "mxc",
   name: "MXC Sandbox Execution",
   description:
-    "OS-level sandboxed tool execution via MXC: runs commands in a Windows ProcessContainer with configured MXC policy files.",
+    "OS-level sandboxed tool execution via MXC with static policy files and per-tool sandbox configurations.",
   configSchema: createMxcPluginConfigSchema(),
   register: registerMxcPlugin,
 });

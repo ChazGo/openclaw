@@ -9,12 +9,10 @@ import { z } from "zod";
 
 const MXC_CONTAINMENTS = ["process", "processcontainer"] as const;
 const MXC_NETWORK_MODES = ["none", "default"] as const;
-const MXC_APPROVAL_SEVERITIES = ["info", "warning", "critical"] as const;
 
 type MxcContainment = (typeof MXC_CONTAINMENTS)[number];
 
 type MxcNetworkMode = (typeof MXC_NETWORK_MODES)[number];
-type MxcApprovalSeverity = (typeof MXC_APPROVAL_SEVERITIES)[number];
 
 type MxcPluginConfig = {
   mxcBinaryPath?: string;
@@ -23,10 +21,7 @@ type MxcPluginConfig = {
   timeoutSeconds?: number;
   debug?: boolean;
   mxcPolicyPaths?: string[];
-  localPolicyEnabled?: boolean;
-  localPolicyAutoApprove?: boolean;
-  approvalTimeoutMs?: number;
-  approvalSeverity?: MxcApprovalSeverity;
+  perToolSandboxEnabled?: boolean;
   auditLogPath?: string;
 };
 
@@ -38,10 +33,7 @@ export type MxcConfig = {
   timeoutSecondsConfigured?: boolean;
   debug: boolean;
   mxcPolicyPaths?: string[];
-  localPolicyEnabled: boolean;
-  localPolicyAutoApprove: boolean;
-  approvalTimeoutMs: number;
-  approvalSeverity: MxcApprovalSeverity;
+  perToolSandboxEnabled: boolean;
   auditLogPath?: string;
 };
 
@@ -49,11 +41,7 @@ const DEFAULT_CONTAINMENT: MxcContainment = "process";
 const DEFAULT_NETWORK: MxcNetworkMode = "none";
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_DEBUG = false;
-const DEFAULT_LOCAL_POLICY_ENABLED = true;
-const DEFAULT_LOCAL_POLICY_AUTO_APPROVE = false;
-const MAX_APPROVAL_TIMEOUT_MS = 600_000;
-const DEFAULT_APPROVAL_TIMEOUT_MS = MAX_APPROVAL_TIMEOUT_MS;
-const DEFAULT_APPROVAL_SEVERITY: MxcApprovalSeverity = "warning";
+const DEFAULT_PER_TOOL_SANDBOX_ENABLED = true;
 
 const nonEmptyTrimmedString = (message: string) =>
   z.string({ error: message }).trim().min(1, { error: message });
@@ -104,31 +92,12 @@ const MxcPluginConfigSchema = z.strictObject({
       "Absolute MXC policy file paths applied on top of the built-in sandbox baseline policy.",
     )
     .optional(),
-  localPolicyEnabled: z
-    .boolean({ error: "localPolicyEnabled must be a boolean" })
-    .describe("Evaluate tool calls against the MXC local SQLite policy store.")
-    .optional(),
-  localPolicyAutoApprove: z
-    .boolean({ error: "localPolicyAutoApprove must be a boolean" })
-    .describe("Automatically settle matching development policies as allow.")
-    .optional(),
-  approvalTimeoutMs: z
-    .number({ error: "approvalTimeoutMs must be a positive integer" })
-    .int({ error: "approvalTimeoutMs must be a positive integer" })
-    .min(1, { error: "approvalTimeoutMs must be a positive integer" })
-    .max(MAX_APPROVAL_TIMEOUT_MS, {
-      error: `approvalTimeoutMs must be <= ${MAX_APPROVAL_TIMEOUT_MS}`,
-    })
-    .describe("Timeout for MXC development-policy approvals.")
-    .optional(),
-  approvalSeverity: z
-    .enum(MXC_APPROVAL_SEVERITIES, {
-      error: `approvalSeverity must be one of ${MXC_APPROVAL_SEVERITIES.join(", ")}`,
-    })
-    .describe("Severity displayed for MXC development-policy approvals.")
+  perToolSandboxEnabled: z
+    .boolean({ error: "perToolSandboxEnabled must be a boolean" })
+    .describe("Select per-tool MXC sandbox configurations stored in OpenClaw SQLite.")
     .optional(),
   auditLogPath: nonEmptyTrimmedString("auditLogPath must be a non-empty string")
-    .describe("Optional absolute path for metadata-only MXC policy audit JSONL.")
+    .describe("Optional absolute path for metadata-only MXC sandbox audit JSONL.")
     .optional(),
 });
 
@@ -160,10 +129,7 @@ export function resolveConfig(value: unknown): MxcConfig {
       network: DEFAULT_NETWORK,
       timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
       debug: DEFAULT_DEBUG,
-      localPolicyEnabled: DEFAULT_LOCAL_POLICY_ENABLED,
-      localPolicyAutoApprove: DEFAULT_LOCAL_POLICY_AUTO_APPROVE,
-      approvalTimeoutMs: DEFAULT_APPROVAL_TIMEOUT_MS,
-      approvalSeverity: DEFAULT_APPROVAL_SEVERITY,
+      perToolSandboxEnabled: DEFAULT_PER_TOOL_SANDBOX_ENABLED,
     };
   }
 
@@ -181,10 +147,7 @@ export function resolveConfig(value: unknown): MxcConfig {
     timeoutSeconds: config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
     debug: config.debug ?? DEFAULT_DEBUG,
     mxcPolicyPaths: resolveMxcPolicyPaths(config.mxcPolicyPaths),
-    localPolicyEnabled: config.localPolicyEnabled ?? DEFAULT_LOCAL_POLICY_ENABLED,
-    localPolicyAutoApprove: config.localPolicyAutoApprove ?? DEFAULT_LOCAL_POLICY_AUTO_APPROVE,
-    approvalTimeoutMs: config.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
-    approvalSeverity: config.approvalSeverity ?? DEFAULT_APPROVAL_SEVERITY,
+    perToolSandboxEnabled: config.perToolSandboxEnabled ?? DEFAULT_PER_TOOL_SANDBOX_ENABLED,
     auditLogPath: resolveOptionalAbsolutePath(config.auditLogPath, "auditLogPath"),
   };
 

@@ -5,12 +5,12 @@ import { resolveMxcBinaryPath } from "./binary-resolver.js";
 import { resolveConfig } from "./config.js";
 import { createMxcSandboxBackendFactory } from "./mxc-backend-factory.js";
 import { mxcSandboxBackendManager } from "./mxc-backend.js";
-import { MxcPolicyAudit } from "./policy-audit.js";
-import { openMxcPolicyAuthorizationStore } from "./policy-authorization.js";
-import { registerMxcPolicyCli } from "./policy-cli.js";
-import { registerMxcPolicyHooks } from "./policy-hooks.js";
-import { openMxcPolicyStore } from "./policy-store.js";
 import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "./readiness.js";
+import { MxcSandboxConfigurationAudit } from "./sandbox-configuration-audit.js";
+import { openMxcSandboxConfigurationAuthorizationStore } from "./sandbox-configuration-authorization.js";
+import { registerMxcSandboxConfigurationCli } from "./sandbox-configuration-cli.js";
+import { registerMxcSandboxConfigurationHooks } from "./sandbox-configuration-hooks.js";
+import { openMxcSandboxConfigurationStore } from "./sandbox-configuration-store.js";
 
 export function registerMxcPlugin(api: OpenClawPluginApi): void {
   if (api.registrationMode !== "full") {
@@ -19,11 +19,13 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
 
   const config = resolveConfig(api.pluginConfig);
   const stateDir = api.runtime.state.resolveStateDir(process.env);
-  const store = openMxcPolicyStore((options) => api.runtime.state.openKeyedStore(options));
-  const authorizationStore = openMxcPolicyAuthorizationStore((options) =>
+  const store = openMxcSandboxConfigurationStore((options) =>
+    api.runtime.state.openKeyedStore(options),
+  );
+  const authorizationStore = openMxcSandboxConfigurationAuthorizationStore((options) =>
     api.runtime.state.openSyncKeyedStore(options),
   );
-  registerMxcPolicyCli(api, () => store);
+  registerMxcSandboxConfigurationCli(api, () => store);
 
   if (process.platform !== "win32") {
     console.warn(
@@ -49,11 +51,11 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   // directory-access ACEs, which only degrades in-sandbox directory listing.
   warnMxcHostPrepIfNeeded();
 
-  const audit = new MxcPolicyAudit({
-    logPath: config.auditLogPath ?? path.join(stateDir, "logs", "mxc-policy.jsonl"),
+  const audit = new MxcSandboxConfigurationAudit({
+    logPath: config.auditLogPath ?? path.join(stateDir, "logs", "mxc-sandbox.jsonl"),
     warn: (message) => api.logger.warn(message),
   });
-  registerMxcPolicyHooks({
+  registerMxcSandboxConfigurationHooks({
     api,
     getConfig: () => resolveConfig(api.pluginConfig),
     store,

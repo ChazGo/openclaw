@@ -17,12 +17,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveConfig, type MxcConfig } from "../src/config.js";
 import { createMxcSandboxBackendFactory } from "../src/mxc-backend-factory.js";
 import { createMxcSandboxBackendHandle, mxcSandboxBackendManager } from "../src/mxc-backend.js";
-import { MxcPolicyAuthorizationStore } from "../src/policy-authorization.js";
 import {
-  computeMxcPolicyArgsHash,
-  computeMxcPolicyRuleFingerprint,
-  MxcPolicyStore,
-} from "../src/policy-store.js";
+  MxcSandboxConfigurationAuthorizationStore,
+  MXC_SANDBOX_CONFIGURATION_NONCE_ENV,
+} from "../src/sandbox-configuration-authorization.js";
+import {
+  computeMxcSandboxConfigurationArgsHash,
+  computeMxcSandboxConfigurationFingerprint,
+  MxcSandboxConfigurationStore,
+} from "../src/sandbox-configuration-store.js";
 import { MemoryKeyedStore, MemorySyncKeyedStore } from "./policy-test-helpers.js";
 
 const { spawnCommandMock, execFileSyncMock, mockedHomeDir } = vi.hoisted(() => ({
@@ -57,10 +60,7 @@ const baseConfig: MxcConfig = {
   timeoutSeconds: 120,
   timeoutSecondsConfigured: true,
   debug: false,
-  localPolicyEnabled: false,
-  localPolicyAutoApprove: false,
-  approvalTimeoutMs: 600_000,
-  approvalSeverity: "warning",
+  perToolSandboxEnabled: false,
 };
 
 const baseParams = {
@@ -294,12 +294,33 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     });
   });
 
+  test("ignores and strips configuration nonces when per-tool sandboxing is disabled", async () => {
+    const handle = createMxcSandboxBackendHandle(baseParams);
+    const spec = await handle.buildExecSpec({
+      command: "echo hello",
+      env: {
+        CUSTOM_ENV: "caller",
+        [MXC_SANDBOX_CONFIGURATION_NONCE_ENV]: "model-controlled-value",
+      },
+      usePty: false,
+    });
+
+    const env = stringArrayField(objectField(decodeContainerConfig(spec.argv), "process"), "env");
+    expect(env).toContain("CUSTOM_ENV=caller");
+    expect(env.some((entry) => entry.startsWith(`${MXC_SANDBOX_CONFIGURATION_NONCE_ENV}=`))).toBe(
+      false,
+    );
+  });
+
   test("applies an authorized narrower timeout and network posture", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -324,11 +345,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("adds tool capabilities to the MXC baseline", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -353,10 +377,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("does not let a capability override blocked network", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
+      config: { ...baseConfig, perToolSandboxEnabled: true },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -378,11 +406,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("does not let a capability widen outbound access to server access", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -403,14 +434,16 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     ).rejects.toThrow(/exceeds the outbound-only network baseline/u);
   });
 
-  test("fails closed when approval freezing drops the policy nonce", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
-    const policyStore = new MxcPolicyStore(new MemoryKeyedStore());
+  test("fails closed when a later rewrite drops the configuration nonce", async () => {
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
+    const sandboxConfigurationStore = new MxcSandboxConfigurationStore(new MemoryKeyedStore());
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, localPolicyEnabled: true, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
-      policyStore,
+      sandboxConfigurationStore,
     });
     authorizationStore.authorize(
       { command: "echo hello" },
@@ -431,21 +464,23 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     ).rejects.toThrow(/authorization is missing or expired/u);
   });
 
-  test("accepts an authorized unmatched call while no policy exists", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
-    const policyStore = new MxcPolicyStore(new MemoryKeyedStore());
+  test("accepts an authorized unmatched call while no configuration exists", async () => {
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
+    const sandboxConfigurationStore = new MxcSandboxConfigurationStore(new MemoryKeyedStore());
     const params = { command: "echo hello" };
     const authorized = authorizationStore.authorize(params, {
       toolName: "exec",
-      argsHash: computeMxcPolicyArgsHash(params),
+      argsHash: computeMxcSandboxConfigurationArgsHash(params),
       command: params.command,
       envelope: {},
     });
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, localPolicyEnabled: true },
+      config: { ...baseConfig, perToolSandboxEnabled: true },
       authorizationStore,
-      policyStore,
+      sandboxConfigurationStore,
     });
 
     await expect(
@@ -457,18 +492,20 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     ).resolves.toMatchObject({ stdinMode: "pipe-closed" });
   });
 
-  test("fails closed when local policy is enabled without a policy store", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+  test("fails closed when per-tool configuration is enabled without a store", async () => {
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const params = { command: "echo hello" };
     const authorized = authorizationStore.authorize(params, {
       toolName: "exec",
-      argsHash: computeMxcPolicyArgsHash(params),
+      argsHash: computeMxcSandboxConfigurationArgsHash(params),
       command: params.command,
       envelope: {},
     });
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, localPolicyEnabled: true },
+      config: { ...baseConfig, perToolSandboxEnabled: true },
       authorizationStore,
     });
 
@@ -478,25 +515,25 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         env: authorized.params.env as Record<string, string>,
         usePty: false,
       }),
-    ).rejects.toThrow(/policy store is unavailable/u);
+    ).rejects.toThrow(/configuration store is unavailable/u);
   });
 
-  test("rejects an authorization after its policy rule changes", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
-    const policyStore = new MxcPolicyStore(new MemoryKeyedStore());
-    const rule = await policyStore.upsert({
+  test("rejects an authorization after its sandbox configuration changes", async () => {
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
+    const sandboxConfigurationStore = new MxcSandboxConfigurationStore(new MemoryKeyedStore());
+    const configuration = await sandboxConfigurationStore.upsert({
       toolName: "exec",
       argsHash: "hash",
       argsSummary: "{}",
-      decision: "allow",
       envelope: { networkEnabled: false },
-      lifecycle: "settled",
     });
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, localPolicyEnabled: true, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
-      policyStore,
+      sandboxConfigurationStore,
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -504,18 +541,16 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         toolName: "exec",
         argsHash: "hash",
         command: "echo hello",
-        envelope: rule.envelope,
-        policyRule: {
-          argsHash: rule.argsHash,
-          acceptedFingerprints: [computeMxcPolicyRuleFingerprint(rule)],
+        envelope: configuration.envelope,
+        sandboxConfiguration: {
+          argsHash: configuration.argsHash,
+          fingerprint: computeMxcSandboxConfigurationFingerprint(configuration),
         },
       },
     );
-    await policyStore.upsert({
-      ...rule,
-      decision: "deny",
-      envelope: {},
-      lifecycle: "settled",
+    await sandboxConfigurationStore.upsert({
+      ...configuration,
+      envelope: { timeoutSeconds: 20 },
     });
 
     await expect(
@@ -527,42 +562,40 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     ).rejects.toThrow(/authorization is stale/u);
   });
 
-  test("rejects a wildcard authorization after an exact deny is added", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
-    const policyStore = new MxcPolicyStore(new MemoryKeyedStore());
+  test("rejects a wildcard authorization after an exact configuration is added", async () => {
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
+    const sandboxConfigurationStore = new MxcSandboxConfigurationStore(new MemoryKeyedStore());
     const params = { command: "echo hello" };
-    const argsHash = computeMxcPolicyArgsHash(params);
-    const wildcardRule = await policyStore.upsert({
+    const argsHash = computeMxcSandboxConfigurationArgsHash(params);
+    const wildcardConfiguration = await sandboxConfigurationStore.upsert({
       toolName: "exec",
       argsHash: "",
       argsSummary: "(all arguments)",
-      decision: "allow",
       envelope: { networkEnabled: false },
-      lifecycle: "settled",
     });
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, localPolicyEnabled: true, network: "default" },
+      config: { ...baseConfig, perToolSandboxEnabled: true, network: "default" },
       authorizationStore,
-      policyStore,
+      sandboxConfigurationStore,
     });
     const authorized = authorizationStore.authorize(params, {
       toolName: "exec",
       argsHash,
       command: params.command,
-      envelope: wildcardRule.envelope,
-      policyRule: {
-        argsHash: wildcardRule.argsHash,
-        acceptedFingerprints: [computeMxcPolicyRuleFingerprint(wildcardRule)],
+      envelope: wildcardConfiguration.envelope,
+      sandboxConfiguration: {
+        argsHash: wildcardConfiguration.argsHash,
+        fingerprint: computeMxcSandboxConfigurationFingerprint(wildcardConfiguration),
       },
     });
-    await policyStore.upsert({
+    await sandboxConfigurationStore.upsert({
       toolName: "exec",
       argsHash,
       argsSummary: "{}",
-      decision: "deny",
-      envelope: {},
-      lifecycle: "settled",
+      envelope: { timeoutSeconds: 20 },
     });
 
     await expect(
@@ -577,10 +610,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   test("fails closed for a denied child nested under the writable workspace", async () => {
     const deniedPath = path.join(baseParams.workdir, "blocked");
     mkdirSync(deniedPath, { recursive: true });
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
+      config: { ...baseConfig, perToolSandboxEnabled: true },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -602,10 +639,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("downgrades an exact writable workspace grant to read-only", async () => {
-    const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+    const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+      new MemorySyncKeyedStore(),
+    );
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
+      config: { ...baseConfig, perToolSandboxEnabled: true },
       authorizationStore,
+      sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
     });
     const authorized = authorizationStore.authorize(
       { command: "echo hello" },
@@ -631,10 +672,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   test("adds writable tool paths to the MXC baseline", async () => {
     const outputPath = mkdtempSync(path.join(tmpdir(), "mxc-tool-rw-"));
     try {
-      const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+      const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+        new MemorySyncKeyedStore(),
+      );
       const handle = createMxcSandboxBackendHandle({
         ...baseParams,
+        config: { ...baseConfig, perToolSandboxEnabled: true },
         authorizationStore,
+        sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
       });
       const authorized = authorizationStore.authorize(
         { command: "echo hello" },
@@ -663,13 +708,15 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     }
   });
 
-  test("denies sandbox access to the OpenClaw policy state directory", async () => {
-    const policyStateDir = mkdtempSync(path.join(tmpdir(), "mxc-policy-state-"));
+  test("denies sandbox access to the OpenClaw state directory", async () => {
+    const protectedStateDir = mkdtempSync(path.join(tmpdir(), "mxc-protected-state-"));
     try {
-      const authorizationStore = new MxcPolicyAuthorizationStore(new MemorySyncKeyedStore());
+      const authorizationStore = new MxcSandboxConfigurationAuthorizationStore(
+        new MemorySyncKeyedStore(),
+      );
       const handle = createMxcSandboxBackendHandle({
         ...baseParams,
-        policyStateDir,
+        protectedStateDir,
         authorizationStore,
       });
       const baselineSpec = await handle.buildExecSpec({
@@ -682,7 +729,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
           objectField(decodeContainerConfig(baselineSpec.argv), "filesystem"),
           "deniedPaths",
         ),
-      ).toContain(path.resolve(policyStateDir));
+      ).toContain(path.resolve(protectedStateDir));
 
       const authorized = authorizationStore.authorize(
         { command: "echo governed" },
@@ -690,10 +737,17 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
           toolName: "exec",
           argsHash: "hash",
           command: "echo governed",
-          envelope: { readwritePaths: [policyStateDir] },
+          envelope: { readwritePaths: [protectedStateDir] },
         },
       );
-      const governedSpec = await handle.buildExecSpec({
+      const governedHandle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        config: { ...baseConfig, perToolSandboxEnabled: true },
+        protectedStateDir,
+        authorizationStore,
+        sandboxConfigurationStore: new MxcSandboxConfigurationStore(new MemoryKeyedStore()),
+      });
+      const governedSpec = await governedHandle.buildExecSpec({
         command: "echo governed",
         env: authorized.params.env as Record<string, string>,
         usePty: false,
@@ -703,13 +757,13 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         "filesystem",
       );
       expect(stringArrayField(governedFilesystem, "deniedPaths")).toContain(
-        path.resolve(policyStateDir),
+        path.resolve(protectedStateDir),
       );
       expect(stringArrayField(governedFilesystem, "readwritePaths")).not.toContain(
-        path.resolve(policyStateDir),
+        path.resolve(protectedStateDir),
       );
     } finally {
-      rmSync(policyStateDir, { recursive: true, force: true });
+      rmSync(protectedStateDir, { recursive: true, force: true });
     }
   });
 
@@ -1484,7 +1538,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
           filesystem: {},
           process: { timeoutSeconds: 45 },
         },
-        { ...resolveConfig({}), localPolicyEnabled: false },
+        { ...resolveConfig({}), perToolSandboxEnabled: false },
       ),
     });
     const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
@@ -1496,7 +1550,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   test("timeout falls back to the built-in baseline when no policy paths are configured", async () => {
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...resolveConfig({}), localPolicyEnabled: false },
+      config: { ...resolveConfig({}), perToolSandboxEnabled: false },
     });
     const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
 
@@ -1685,8 +1739,8 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     expect(processConfig?.timeout).toBe(5_000);
   });
 
-  test("runShellCommand denies access to the OpenClaw policy state directory", async () => {
-    const policyStateDir = mkdtempSync(path.join(tmpdir(), "mxc-shell-policy-state-"));
+  test("runShellCommand denies access to the OpenClaw state directory", async () => {
+    const protectedStateDir = mkdtempSync(path.join(tmpdir(), "mxc-shell-protected-state-"));
     let filesystemConfig: Record<string, unknown> | undefined;
     try {
       spawnCommandMock.mockImplementationOnce(async (argv: string[]) => {
@@ -1701,7 +1755,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       });
       const handle = createMxcSandboxBackendHandle({
         ...baseParams,
-        policyStateDir,
+        protectedStateDir,
       });
 
       await handle.runShellCommand({
@@ -1711,10 +1765,10 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       });
 
       expect(stringArrayField(filesystemConfig ?? {}, "deniedPaths")).toContain(
-        path.resolve(policyStateDir),
+        path.resolve(protectedStateDir),
       );
     } finally {
-      rmSync(policyStateDir, { recursive: true, force: true });
+      rmSync(protectedStateDir, { recursive: true, force: true });
     }
   });
 

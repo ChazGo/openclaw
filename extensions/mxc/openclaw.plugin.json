@@ -1,7 +1,7 @@
 {
   "id": "mxc",
   "name": "MXC Sandbox Execution",
-  "description": "OS-level sandboxed tool execution via MXC with static policy files and per-tool SQLite policies.",
+  "description": "OS-level sandboxed tool execution via MXC with static policy files and per-tool sandbox configurations.",
   "activation": {
     "onStartup": false,
     "onConfigPaths": ["plugins.entries.mxc"],
@@ -45,29 +45,14 @@
         },
         "description": "Absolute MXC policy file paths applied on top of the built-in sandbox baseline policy."
       },
-      "localPolicyEnabled": {
+      "perToolSandboxEnabled": {
         "type": "boolean",
-        "description": "Evaluate tool calls against the MXC local SQLite policy store."
-      },
-      "localPolicyAutoApprove": {
-        "type": "boolean",
-        "description": "Automatically settle matching development policies as allow."
-      },
-      "approvalTimeoutMs": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 600000,
-        "description": "Timeout for MXC development-policy approvals."
-      },
-      "approvalSeverity": {
-        "type": "string",
-        "enum": ["info", "warning", "critical"],
-        "description": "Severity displayed for MXC development-policy approvals."
+        "description": "Select per-tool MXC sandbox configurations stored in OpenClaw SQLite."
       },
       "auditLogPath": {
         "type": "string",
         "minLength": 1,
-        "description": "Optional absolute path for metadata-only MXC policy audit JSONL."
+        "description": "Optional absolute path for metadata-only MXC sandbox audit JSONL."
       }
     }
   },
@@ -103,28 +88,13 @@
       "help": "Absolute MXC policy file paths applied on top of the built-in sandbox baseline policy.",
       "advanced": true
     },
-    "localPolicyEnabled": {
-      "label": "Local Tool Policy",
-      "help": "Evaluate tool calls against MXC policies stored in OpenClaw SQLite."
-    },
-    "localPolicyAutoApprove": {
-      "label": "Auto-approve Development Policies",
-      "help": "Automatically settle an existing development policy as allow. Unmatched calls are never persisted.",
-      "advanced": true
-    },
-    "approvalTimeoutMs": {
-      "label": "Policy Approval Timeout (ms)",
-      "help": "How long an MXC development-policy approval remains pending.",
-      "advanced": true
-    },
-    "approvalSeverity": {
-      "label": "Policy Approval Severity",
-      "help": "Severity shown by approval-capable clients.",
-      "advanced": true
+    "perToolSandboxEnabled": {
+      "label": "Per-Tool Sandbox Configuration",
+      "help": "Select per-tool MXC sandbox configurations stored in OpenClaw SQLite."
     },
     "auditLogPath": {
-      "label": "Policy Audit Log",
-      "help": "Optional absolute path for metadata-only MXC policy audit JSONL.",
+      "label": "Sandbox Audit Log",
+      "help": "Optional absolute path for metadata-only MXC sandbox audit JSONL.",
       "advanced": true
     }
   }

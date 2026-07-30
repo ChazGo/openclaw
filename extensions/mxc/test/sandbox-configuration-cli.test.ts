@@ -1,8 +1,11 @@
 import { Command } from "commander";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { registerMxcPolicyCli } from "../src/policy-cli.js";
-import { computeMxcPolicyArgsHash, MxcPolicyStore } from "../src/policy-store.js";
+import { registerMxcSandboxConfigurationCli } from "../src/sandbox-configuration-cli.js";
+import {
+  computeMxcSandboxConfigurationArgsHash,
+  MxcSandboxConfigurationStore,
+} from "../src/sandbox-configuration-store.js";
 import { MemoryKeyedStore } from "./policy-test-helpers.js";
 
 afterEach(() => {
@@ -12,55 +15,43 @@ afterEach(() => {
 function createCli() {
   const program = new Command();
   program.exitOverride();
-  const store = new MxcPolicyStore(new MemoryKeyedStore());
+  const store = new MxcSandboxConfigurationStore(new MemoryKeyedStore());
   const api = {
     registerCli: (register: (input: { program: Command }) => void) => register({ program }),
   } as unknown as OpenClawPluginApi;
-  registerMxcPolicyCli(api, () => store);
+  registerMxcSandboxConfigurationCli(api, () => store);
   return { program, store };
 }
 
-describe("MXC policy CLI", () => {
-  test("creates a settled wildcard allow policy", async () => {
+describe("MXC sandbox configuration CLI", () => {
+  test("creates a wildcard sandbox configuration", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const { program, store } = createCli();
 
     await program.parseAsync(
-      [
-        "mxc",
-        "policy",
-        "edit",
-        "exec",
-        "--decision",
-        "allow",
-        "--envelope",
-        '{"timeoutSeconds":30}',
-        "--settled",
-      ],
+      ["mxc", "sandbox", "edit", "exec", "--envelope", '{"timeoutSeconds":30}'],
       { from: "user" },
     );
 
     await expect(store.lookupExact("exec", "")).resolves.toMatchObject({
-      decision: "allow",
-      lifecycle: "settled",
       envelope: { timeoutSeconds: 30 },
     });
   });
 
-  test("targets one exact policy for removal", async () => {
+  test("targets one exact sandbox configuration for removal", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const { program, store } = createCli();
     const args = '{"path":"C:\\\\data.txt"}';
 
     await program.parseAsync(
-      ["mxc", "policy", "edit", "read", "--args", args, "--decision", "deny", "--settled"],
+      ["mxc", "sandbox", "edit", "read", "--args", args, "--envelope", "{}"],
       { from: "user" },
     );
-    await program.parseAsync(["mxc", "policy", "remove", "read", "--args", args], {
+    await program.parseAsync(["mxc", "sandbox", "remove", "read", "--args", args], {
       from: "user",
     });
 
-    const argsHash = computeMxcPolicyArgsHash({ path: "C:\\data.txt" });
+    const argsHash = computeMxcSandboxConfigurationArgsHash({ path: "C:\\data.txt" });
     await expect(store.lookupExact("read", argsHash)).resolves.toBeUndefined();
   });
 });

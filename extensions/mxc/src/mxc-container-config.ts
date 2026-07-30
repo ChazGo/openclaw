@@ -4,8 +4,8 @@ import path from "node:path";
 import type { ContainerConfig } from "@microsoft/mxc-sdk";
 import { isPathInside } from "openclaw/plugin-sdk/security-runtime";
 import type { MxcConfig } from "./config.js";
-import type { MxcExecutionEnvelope } from "./policy-types.js";
 import { resolveBaselineReadonlyPaths, type BaselineHostEnv } from "./sandbox-baseline.js";
+import type { MxcSandboxConfigurationEnvelope } from "./sandbox-configuration-types.js";
 import type {
   LoadedSandboxBaselinePolicy,
   SandboxConfiguredPathEntry,
@@ -104,14 +104,15 @@ export function buildMxcContainerConfig(params: {
   sandboxTempDir: string;
   workdir: string;
   workspace: MxcWorkspaceContext;
-  policyStateDir?: string;
+  protectedStateDir?: string;
   env: Record<string, string>;
-  policyEnvelope?: MxcExecutionEnvelope;
+  sandboxConfigurationEnvelope?: MxcSandboxConfigurationEnvelope;
 }): ContainerConfig {
   const networkAllowed =
-    params.config.network === "default" && params.policyEnvelope?.networkEnabled !== false;
+    params.config.network === "default" &&
+    params.sandboxConfigurationEnvelope?.networkEnabled !== false;
   const localNetworkAllowed = false;
-  assertPolicyDoesNotWidenNetwork(params.policyEnvelope, {
+  assertSandboxConfigurationDoesNotWidenNetwork(params.sandboxConfigurationEnvelope, {
     networkAllowed,
     localNetworkAllowed,
   });
@@ -120,8 +121,8 @@ export function buildMxcContainerConfig(params: {
     context: params.baselineContext,
     sandboxTempDir: params.sandboxTempDir,
     workspace: params.workspace,
-    ...(params.policyStateDir ? { policyStateDir: params.policyStateDir } : {}),
-    policyEnvelope: params.policyEnvelope,
+    ...(params.protectedStateDir ? { protectedStateDir: params.protectedStateDir } : {}),
+    sandboxConfigurationEnvelope: params.sandboxConfigurationEnvelope,
   });
 
   const processEnv = normalizeWindowsProcessEnvRecord({
@@ -140,7 +141,11 @@ export function buildMxcContainerConfig(params: {
       cwd: resolveProcessCwd(params.workdir),
       env: processEnv,
       timeout:
-        resolveProcessTimeoutSeconds(params.config, params.baseline, params.policyEnvelope) * 1000,
+        resolveProcessTimeoutSeconds(
+          params.config,
+          params.baseline,
+          params.sandboxConfigurationEnvelope,
+        ) * 1000,
     },
     filesystem,
     ui: {
@@ -155,7 +160,7 @@ export function buildMxcContainerConfig(params: {
     processContainer: {
       name: processContainerName(params.runtimeId),
       leastPrivilege: true,
-      capabilities: resolveProcessCapabilities(params.policyEnvelope, {
+      capabilities: resolveProcessCapabilities(params.sandboxConfigurationEnvelope, {
         networkAllowed,
         localNetworkAllowed,
       }),
@@ -174,8 +179,8 @@ function buildFilesystemConfig(params: {
   context: BaselineApplicationContext;
   sandboxTempDir: string;
   workspace: MxcWorkspaceContext;
-  policyStateDir?: string;
-  policyEnvelope?: MxcExecutionEnvelope;
+  protectedStateDir?: string;
+  sandboxConfigurationEnvelope?: MxcSandboxConfigurationEnvelope;
 }): MxcFilesystemConfig {
   const readwritePathSpecs = resolveWorkspaceReadwritePathSpecs(params.workspace);
   const requiredReadwritePathSpecs: FilesystemPathSpec[] = [];
@@ -212,24 +217,25 @@ function buildFilesystemConfig(params: {
   });
 
   const readonlyPaths = resolveExistingFilesystemPaths(readonlyPathSpecs, "read-only");
-  const policyFilesystem = composePolicyFilesystem({
+  const effectiveFilesystem = composeSandboxConfigurationFilesystem({
     deniedPaths: [
-      ...(params.policyStateDir ? [path.resolve(params.policyStateDir)] : []),
-      ...(params.policyEnvelope?.deniedPaths ?? []),
+      ...(params.protectedStateDir ? [path.resolve(params.protectedStateDir)] : []),
+      ...(params.sandboxConfigurationEnvelope?.deniedPaths ?? []),
     ],
     readonlyPaths,
-    policyReadonlyPaths: params.policyEnvelope?.readonlyPaths ?? [],
+    configurationReadonlyPaths: params.sandboxConfigurationEnvelope?.readonlyPaths ?? [],
     requiredReadwritePaths,
     readwritePaths,
-    policyReadwritePaths: params.policyEnvelope?.readwritePaths,
+    configurationReadwritePaths: params.sandboxConfigurationEnvelope?.readwritePaths,
   });
-  assertNoMxcReadwriteReadonlyOverlap(policyFilesystem);
-  assertNoMxcGrantedDeniedOverlap(policyFilesystem);
+  assertNoMxcReadwriteReadonlyOverlap(effectiveFilesystem);
+  assertNoMxcGrantedDeniedOverlap(effectiveFilesystem);
 
   return {
-    readonlyPaths: policyFilesystem.readonlyPaths,
-    deniedPaths: policyFilesystem.deniedPaths.length > 0 ? policyFilesystem.deniedPaths : undefined,
-    readwritePaths: policyFilesystem.readwritePaths,
+    readonlyPaths: effectiveFilesystem.readonlyPaths,
+    deniedPaths:
+      effectiveFilesystem.deniedPaths.length > 0 ? effectiveFilesystem.deniedPaths : undefined,
+    readwritePaths: effectiveFilesystem.readwritePaths,
     clearPolicyOnExit: true,
   };
 }
@@ -396,15 +402,15 @@ function resolveProcessCwd(workdir: string): string {
 function resolveProcessTimeoutSeconds(
   config: MxcConfig,
   baseline: LoadedSandboxBaselinePolicy,
-  policyEnvelope?: MxcExecutionEnvelope,
+  sandboxConfigurationEnvelope?: MxcSandboxConfigurationEnvelope,
 ): number {
   const configuredTimeout =
     config.timeoutSecondsConfigured === true
       ? Math.min(config.timeoutSeconds, baseline.process.timeoutSeconds)
       : baseline.process.timeoutSeconds;
-  return policyEnvelope?.timeoutSeconds === undefined
+  return sandboxConfigurationEnvelope?.timeoutSeconds === undefined
     ? configuredTimeout
-    : Math.min(configuredTimeout, policyEnvelope.timeoutSeconds);
+    : Math.min(configuredTimeout, sandboxConfigurationEnvelope.timeoutSeconds);
 }
 
 function assertNoMxcReadwriteReadonlyOverlap(params: {
@@ -422,40 +428,43 @@ function assertNoMxcReadwriteReadonlyOverlap(params: {
   }
 }
 
-type EffectivePolicyFilesystem = {
+type EffectiveSandboxConfigurationFilesystem = {
   deniedPaths: string[];
   readonlyPaths: string[];
   readwritePaths: string[];
 };
 
-function composePolicyFilesystem(params: {
+function composeSandboxConfigurationFilesystem(params: {
   deniedPaths: readonly string[];
   readonlyPaths: readonly string[];
-  policyReadonlyPaths: readonly string[];
+  configurationReadonlyPaths: readonly string[];
   requiredReadwritePaths: readonly string[];
   readwritePaths: readonly string[];
-  policyReadwritePaths: readonly string[] | undefined;
-}): EffectivePolicyFilesystem {
-  const deniedPaths = resolvePolicyPaths(params.deniedPaths, "denied");
+  configurationReadwritePaths: readonly string[] | undefined;
+}): EffectiveSandboxConfigurationFilesystem {
+  const deniedPaths = resolveSandboxConfigurationPaths(params.deniedPaths, "denied");
   const readonlyPaths = [...params.readonlyPaths];
-  const policyReadwritePaths =
-    params.policyReadwritePaths === undefined
+  const configurationReadwritePaths =
+    params.configurationReadwritePaths === undefined
       ? undefined
-      : resolvePolicyPaths(params.policyReadwritePaths, "readwrite");
+      : resolveSandboxConfigurationPaths(params.configurationReadwritePaths, "readwrite");
   const readwritePaths = [
     ...params.requiredReadwritePaths,
     ...params.readwritePaths,
-    ...(policyReadwritePaths ?? []),
+    ...(configurationReadwritePaths ?? []),
   ];
 
-  for (const candidate of resolvePolicyPaths(params.policyReadonlyPaths, "read-only")) {
+  for (const candidate of resolveSandboxConfigurationPaths(
+    params.configurationReadonlyPaths,
+    "read-only",
+  )) {
     if (readonlyPaths.some((grant) => pathContains(grant, candidate))) {
       continue;
     }
     const effectiveWritableParent = readwritePaths.find((grant) => pathContains(grant, candidate));
     if (effectiveWritableParent && !samePath(effectiveWritableParent, candidate)) {
       throw new Error(
-        `MXC tool policy read-only path ${candidate} is nested under writable path ${effectiveWritableParent}; MXC cannot safely enforce that overlay`,
+        `MXC sandbox configuration read-only path ${candidate} is nested under writable path ${effectiveWritableParent}; MXC cannot safely enforce that overlay`,
       );
     }
     if (effectiveWritableParent) {
@@ -468,7 +477,7 @@ function composePolicyFilesystem(params: {
     for (const grant of [...readonlyPaths, ...readwritePaths]) {
       if (pathContains(grant, deniedPath) && !samePath(grant, deniedPath)) {
         throw new Error(
-          `MXC tool policy denied path ${deniedPath} is nested under granted path ${grant}; MXC cannot safely enforce that overlay`,
+          `MXC sandbox configuration denied path ${deniedPath} is nested under granted path ${grant}; MXC cannot safely enforce that overlay`,
         );
       }
     }
@@ -477,13 +486,13 @@ function composePolicyFilesystem(params: {
   }
 
   return {
-    deniedPaths: dedupePolicyPaths(deniedPaths),
-    readonlyPaths: dedupePolicyPaths(readonlyPaths),
-    readwritePaths: dedupePolicyPaths(readwritePaths),
+    deniedPaths: dedupeSandboxConfigurationPaths(deniedPaths),
+    readonlyPaths: dedupeSandboxConfigurationPaths(readonlyPaths),
+    readwritePaths: dedupeSandboxConfigurationPaths(readwritePaths),
   };
 }
 
-function resolvePolicyPaths(
+function resolveSandboxConfigurationPaths(
   values: readonly string[],
   accessLabel: "denied" | "read-only" | "readwrite",
 ): string[] {
@@ -502,7 +511,7 @@ function removeContainedPaths(values: string[], parent: string): void {
   }
 }
 
-function assertNoMxcGrantedDeniedOverlap(params: EffectivePolicyFilesystem): void {
+function assertNoMxcGrantedDeniedOverlap(params: EffectiveSandboxConfigurationFilesystem): void {
   for (const deniedPath of params.deniedPaths) {
     for (const grantedPath of [...params.readonlyPaths, ...params.readwritePaths]) {
       if (pathsOverlap(deniedPath, grantedPath)) {
@@ -513,7 +522,7 @@ function assertNoMxcGrantedDeniedOverlap(params: EffectivePolicyFilesystem): voi
 }
 
 function resolveProcessCapabilities(
-  envelope: MxcExecutionEnvelope | undefined,
+  envelope: MxcSandboxConfigurationEnvelope | undefined,
   floor: { networkAllowed: boolean; localNetworkAllowed: boolean },
 ): string[] {
   const floorCapabilities = [
@@ -528,31 +537,33 @@ function resolveProcessCapabilities(
       (requested === "internetClient" || requested === "internetClientServer") &&
       !floor.networkAllowed
     ) {
-      throw new Error(`MXC tool policy ${requested} capability conflicts with blocked network`);
+      throw new Error(
+        `MXC sandbox configuration ${requested} capability conflicts with blocked network`,
+      );
     }
     if (requested === "privateNetworkClientServer" && !floor.localNetworkAllowed) {
       throw new Error(
-        "MXC tool policy privateNetworkClientServer capability conflicts with blocked local network",
+        "MXC sandbox configuration privateNetworkClientServer capability conflicts with blocked local network",
       );
     }
     if (requested === "internetClientServer") {
       throw new Error(
-        "MXC tool policy internetClientServer capability exceeds the outbound-only network baseline",
+        "MXC sandbox configuration internetClientServer capability exceeds the outbound-only network baseline",
       );
     }
   }
   return [...new Set([...floorCapabilities, ...envelope.capabilities])];
 }
 
-function assertPolicyDoesNotWidenNetwork(
-  envelope: MxcExecutionEnvelope | undefined,
+function assertSandboxConfigurationDoesNotWidenNetwork(
+  envelope: MxcSandboxConfigurationEnvelope | undefined,
   floor: { networkAllowed: boolean; localNetworkAllowed: boolean },
 ): void {
   if (envelope?.networkEnabled === true && !floor.networkAllowed) {
-    throw new Error("MXC tool policy network access exceeds the MXC floor");
+    throw new Error("MXC sandbox configuration network access exceeds the MXC floor");
   }
   if (envelope?.allowLocalNetwork === true && !floor.localNetworkAllowed) {
-    throw new Error("MXC tool policy local-network access exceeds the MXC floor");
+    throw new Error("MXC sandbox configuration local-network access exceeds the MXC floor");
   }
 }
 
@@ -572,7 +583,7 @@ function samePath(first: string, second: string): boolean {
   return normalizePathForComparison(first) === normalizePathForComparison(second);
 }
 
-function dedupePolicyPaths(values: readonly string[]): string[] {
+function dedupeSandboxConfigurationPaths(values: readonly string[]): string[] {
   const deduped = new Map<string, string>();
   for (const value of values) {
     deduped.set(normalizePathForComparison(value), value);

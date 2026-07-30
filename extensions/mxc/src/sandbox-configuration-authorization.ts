@@ -1,28 +1,30 @@
 import { randomUUID } from "node:crypto";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import type { MxcExecutionEnvelope } from "./policy-types.js";
+import type { MxcSandboxConfigurationEnvelope } from "./sandbox-configuration-types.js";
 
-export const MXC_POLICY_NONCE_ENV = "OPENCLAW_MXC_POLICY_NONCE";
+export const MXC_SANDBOX_CONFIGURATION_NONCE_ENV = "OPENCLAW_MXC_SANDBOX_CONFIGURATION_NONCE";
 
-// The host caps plugin approvals at ten minutes. Keep a short execution grace
-// so an approval resolved near expiry can still reach the sandbox backend.
 const AUTHORIZATION_TTL_MS = 11 * 60 * 1000;
-const APPROVAL_SETTLEMENT_WAIT_MS = 5_000;
 const MAX_PENDING_AUTHORIZATIONS = 512;
-
-class MxcPolicyAuthorizationPendingError extends Error {}
 
 export type MxcExecAuthorization = {
   toolName: "exec";
   argsHash: string;
   command: string;
-  envelope: MxcExecutionEnvelope;
-  approvalState?: "not-required" | "pending" | "approved";
-  policyRule?: {
+  envelope: MxcSandboxConfigurationEnvelope;
+  sandboxConfiguration?: {
     argsHash: string;
-    acceptedFingerprints: string[];
+    fingerprint: string;
   };
 };
+
+export function stripMxcSandboxConfigurationAuthorizationEnv<T>(
+  env: Record<string, T>,
+): Record<string, T> {
+  const cleanEnv = { ...env };
+  delete cleanEnv[MXC_SANDBOX_CONFIGURATION_NONCE_ENV];
+  return cleanEnv;
+}
 
 class MemoryAuthorizationStore implements PluginStateSyncKeyedStore<MxcExecAuthorization> {
   private readonly entriesByKey = new Map<
@@ -83,11 +85,11 @@ class MemoryAuthorizationStore implements PluginStateSyncKeyedStore<MxcExecAutho
   }
 }
 
-export function createMemoryMxcPolicyAuthorizationStore(): MxcPolicyAuthorizationStore {
-  return new MxcPolicyAuthorizationStore(new MemoryAuthorizationStore());
+export function createMemoryMxcSandboxConfigurationAuthorizationStore(): MxcSandboxConfigurationAuthorizationStore {
+  return new MxcSandboxConfigurationAuthorizationStore(new MemoryAuthorizationStore());
 }
 
-export class MxcPolicyAuthorizationStore {
+export class MxcSandboxConfigurationAuthorizationStore {
   constructor(private readonly store: PluginStateSyncKeyedStore<MxcExecAuthorization>) {}
 
   authorize(
@@ -106,7 +108,7 @@ export class MxcPolicyAuthorizationStore {
         ...params,
         env: {
           ...env,
-          [MXC_POLICY_NONCE_ENV]: nonce,
+          [MXC_SANDBOX_CONFIGURATION_NONCE_ENV]: nonce,
         },
       },
     };
@@ -116,88 +118,36 @@ export class MxcPolicyAuthorizationStore {
     this.store.delete(nonce);
   }
 
-  approve(nonce: string): void {
-    if (this.store.update) {
-      const updated = this.store.update(
-        nonce,
-        (current) => (current ? { ...current, approvalState: "approved" } : undefined),
-        { ttlMs: AUTHORIZATION_TTL_MS },
-      );
-      if (!updated) {
-        throw new Error("MXC policy authorization is missing or expired");
-      }
-      return;
-    }
-    const current = this.store.lookup(nonce);
-    if (!current) {
-      throw new Error("MXC policy authorization is missing or expired");
-    }
-    this.store.register(
-      nonce,
-      { ...current, approvalState: "approved" },
-      {
-        ttlMs: AUTHORIZATION_TTL_MS,
-      },
-    );
-  }
-
   consume(params: { command: string; env: Record<string, string> }): {
     authorization?: MxcExecAuthorization;
     env: Record<string, string>;
   } {
-    const env = { ...params.env };
-    const nonce = env[MXC_POLICY_NONCE_ENV];
-    delete env[MXC_POLICY_NONCE_ENV];
+    const nonce = params.env[MXC_SANDBOX_CONFIGURATION_NONCE_ENV];
+    const env = stripMxcSandboxConfigurationAuthorizationEnv(params.env);
     if (!nonce) {
       return { env };
     }
-    const current = this.store.lookup(nonce);
-    if (current?.approvalState === "pending") {
-      throw new MxcPolicyAuthorizationPendingError(
-        "MXC policy authorization has not been approved",
-      );
-    }
     const authorization = this.store.consume(nonce);
     if (!authorization) {
-      throw new Error("MXC policy authorization is missing or expired");
-    }
-    if (authorization.approvalState === "pending") {
-      throw new Error("MXC policy authorization has not been approved");
+      throw new Error("MXC sandbox configuration authorization is missing or expired");
     }
     if (authorization.command.trim() !== params.command.trim()) {
-      throw new Error("MXC policy authorization does not match the exec command");
+      throw new Error("MXC sandbox configuration authorization does not match the exec command");
     }
     return { authorization, env };
   }
-
-  async consumeWhenApproved(params: { command: string; env: Record<string, string> }): Promise<{
-    authorization?: MxcExecAuthorization;
-    env: Record<string, string>;
-  }> {
-    const deadline = Date.now() + APPROVAL_SETTLEMENT_WAIT_MS;
-    while (true) {
-      try {
-        return this.consume(params);
-      } catch (error) {
-        if (!(error instanceof MxcPolicyAuthorizationPendingError) || Date.now() >= deadline) {
-          throw error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-    }
-  }
 }
 
-export function openMxcPolicyAuthorizationStore(
+export function openMxcSandboxConfigurationAuthorizationStore(
   openSyncKeyedStore: <T>(options: {
     namespace: string;
     maxEntries: number;
     overflowPolicy: "evict-oldest";
   }) => PluginStateSyncKeyedStore<T>,
-): MxcPolicyAuthorizationStore {
-  return new MxcPolicyAuthorizationStore(
+): MxcSandboxConfigurationAuthorizationStore {
+  return new MxcSandboxConfigurationAuthorizationStore(
     openSyncKeyedStore<MxcExecAuthorization>({
-      namespace: "tool-policy-authorizations",
+      namespace: "sandbox-configuration-authorizations",
       maxEntries: MAX_PENDING_AUTHORIZATIONS,
       overflowPolicy: "evict-oldest",
     }),
