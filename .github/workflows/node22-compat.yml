@@ -20,22 +20,33 @@ jobs:
           node-version: "24.15.0"
           install-bun: "false"
 
-      - name: Build packages
-        run: |
-          set -euo pipefail
-          pnpm build
-          mkdir -p .artifacts/mxc-handoff
-          pnpm pack --pack-destination .artifacts/mxc-handoff
-          pnpm --filter @openclaw/mxc-sandbox pack \
-            --pack-destination "$GITHUB_WORKSPACE/.artifacts/mxc-handoff"
+      - name: Download exact-head root package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: "8769268172"
+          github-token: ${{ github.token }}
+          path: .artifacts/root-candidate
+          repository: ChazGo/openclaw
+          run-id: "30566707628"
+
+      - name: Download exact-head MXC package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: "8769463191"
+          github-token: ${{ github.token }}
+          path: .artifacts/mxc-candidate
+          repository: ChazGo/openclaw
+          run-id: "30567377477"
 
       - name: Install and bundle MXC
         run: |
           set -euo pipefail
-          root_tgz="$(find .artifacts/mxc-handoff -maxdepth 1 -name 'openclaw-*.tgz' ! -name '*mxc*' -print -quit)"
-          mxc_tgz="$(find .artifacts/mxc-handoff -maxdepth 1 -name '*mxc*sandbox*.tgz' -print -quit)"
+          mkdir -p .artifacts/mxc-handoff
+          root_tgz="$(find .artifacts/root-candidate -name 'openclaw-*.tgz' ! -name '*mxc*' -print -quit)"
+          mxc_tgz="$(find .artifacts/mxc-candidate -name '*mxc*sandbox*.tgz' -print -quit)"
           test -n "$root_tgz"
           test -n "$mxc_tgz"
+          cp "$root_tgz" "$mxc_tgz" .artifacts/mxc-handoff/
 
           npm install \
             --prefix .artifacts/root-install \
