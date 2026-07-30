@@ -1,17 +1,13 @@
-name: Node 22 Compat
+name: MXC Bundled Package Proof
 
 on:
-  schedule:
-    - cron: "23 5 * * 1"
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
-  compat:
-    if: github.repository == 'openclaw/openclaw' || github.event_name == 'workflow_dispatch'
+  package:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -21,101 +17,104 @@ jobs:
       - name: Setup Node environment
         uses: ./.github/actions/setup-node-env
         with:
-          node-version: "22.22.3"
+          node-version: "24.15.0"
           install-bun: "false"
 
-      - name: Resolve trusted declaration cache artifact
-        id: declaration_cache
-        env:
-          ARTIFACT_NAME: build-all-cache-v1-Linux-X64-node-22.22.3
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+      - name: Build packages
         run: |
           set -euo pipefail
-          if ! runs_json="$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/node22-compat.yml/runs?branch=main&status=success&per_page=5" \
-              2>/dev/null
-          )"; then
-            echo "::warning::Unable to list trusted Node 22 runs; continuing cold."
-            exit 0
-          fi
+          pnpm build
+          mkdir -p .artifacts/mxc-handoff
+          pnpm pack --pack-destination .artifacts/mxc-handoff
+          pnpm --filter @openclaw/mxc-sandbox pack \
+            --pack-destination "$GITHUB_WORKSPACE/.artifacts/mxc-handoff"
 
-          while IFS=$'\t' read -r run_id source_sha; do
-            [[ "$run_id" =~ ^[1-9][0-9]*$ && "$source_sha" =~ ^[0-9a-f]{40}$ ]] || continue
-            if ! artifacts_json="$(
-              gh api \
-                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=10" \
-                2>/dev/null
-            )"; then
-              continue
-            fi
-            artifact_id="$(
-              jq -r \
-                --arg name "$ARTIFACT_NAME" \
-                --arg run_id "$run_id" \
-                'first(.artifacts[] | select(
-                  .expired == false and
-                  .name == $name and
-                  (.workflow_run.id | tostring) == $run_id
-                ) | .id) // empty' \
-                <<<"$artifacts_json"
-            )"
-            if [[ ! "$artifact_id" =~ ^[1-9][0-9]*$ ]]; then
-              continue
-            fi
-            echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
-            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-            echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-            exit 0
-          done < <(
-            jq -r '
-              .workflow_runs[] |
-              select(
-                .status == "completed" and
-                .conclusion == "success" and
-                .head_branch == "main" and
-                (.path | split("@")[0]) == ".github/workflows/node22-compat.yml" and
-                (.event == "schedule" or .event == "workflow_dispatch")
-              ) |
-              [.id, .head_sha] |
-              @tsv
-            ' <<<"$runs_json"
+      - name: Install and bundle MXC
+        run: |
+          set -euo pipefail
+          root_tgz="$(find .artifacts/mxc-handoff -maxdepth 1 -name 'openclaw-*.tgz' ! -name '*mxc*' -print -quit)"
+          mxc_tgz="$(find .artifacts/mxc-handoff -maxdepth 1 -name '*mxc*sandbox*.tgz' -print -quit)"
+          test -n "$root_tgz"
+          test -n "$mxc_tgz"
+
+          npm install \
+            --prefix .artifacts/root-install \
+            --ignore-scripts=false \
+            --no-audit \
+            --no-fund \
+            "$root_tgz"
+          npm install \
+            --prefix .artifacts/mxc-install \
+            --ignore-scripts=false \
+            --no-audit \
+            --no-fund \
+            "$mxc_tgz"
+
+          installed_root=".artifacts/root-install/node_modules/openclaw"
+          installed_mxc=".artifacts/mxc-install/node_modules/@openclaw/mxc-sandbox"
+          bundled_mxc="$installed_root/dist/extensions/mxc"
+          mkdir -p "$bundled_mxc/node_modules"
+          cp -a "$installed_mxc/dist/." "$bundled_mxc/"
+          cp "$installed_mxc/openclaw.plugin.json" "$bundled_mxc/"
+          cp "$installed_mxc/npm-shrinkwrap.json" "$bundled_mxc/"
+          cp "$installed_mxc/README.md" "$bundled_mxc/"
+          cp -a .artifacts/mxc-install/node_modules/. "$bundled_mxc/node_modules/"
+          rm -rf "$bundled_mxc/node_modules/@openclaw/mxc-sandbox"
+
+          INSTALLED_MXC="$installed_mxc" BUNDLED_MXC="$bundled_mxc" node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const source = JSON.parse(
+            fs.readFileSync(path.join(process.env.INSTALLED_MXC, "package.json"), "utf8"),
+          );
+          source.openclaw.extensions = ["./index.js"];
+          delete source.openclaw.runtimeExtensions;
+          delete source.openclaw.build;
+          fs.writeFileSync(
+            path.join(process.env.BUNDLED_MXC, "package.json"),
+            `${JSON.stringify(source, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Prove bundled discovery and trust
+        run: |
+          set -euo pipefail
+          state_dir="$GITHUB_WORKSPACE/.artifacts/proof-state"
+          mkdir -p "$state_dir"
+          printf '%s\n' '{"plugins":{"entries":{"mxc":{"enabled":true}}}}' \
+            > "$state_dir/openclaw.json"
+          export OPENCLAW_STATE_DIR="$state_dir"
+          node .artifacts/root-install/node_modules/openclaw/openclaw.mjs \
+            plugins inspect mxc --runtime --json \
+            | tee .artifacts/mxc-handoff/mxc-runtime-inspect.json
+          node -e '
+            const fs = require("node:fs");
+            const report = JSON.parse(
+              fs.readFileSync(".artifacts/mxc-handoff/mxc-runtime-inspect.json", "utf8"),
+            );
+            if (report.id !== "mxc" || report.status !== "loaded") {
+              throw new Error(`MXC runtime proof failed: ${JSON.stringify(report)}`);
+            }
+          '
+
+      - name: Create handoff payload
+        run: |
+          set -euo pipefail
+          bundled_mxc=".artifacts/root-install/node_modules/openclaw/dist/extensions/mxc"
+          (
+            cd "$bundled_mxc"
+            zip -qr "$GITHUB_WORKSPACE/.artifacts/mxc-handoff/openclaw-mxc-bundled-e763e44427.zip" .
+          )
+          (
+            cd .artifacts/mxc-handoff
+            sha256sum *.tgz *.zip mxc-runtime-inspect.json > SHA256SUMS.txt
           )
 
-      - name: Restore trusted declaration cache artifact
-        if: steps.declaration_cache.outputs.artifact_id != ''
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          artifact-ids: ${{ steps.declaration_cache.outputs.artifact_id }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: .artifacts/build-all-cache
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.declaration_cache.outputs.run_id }}
-
-      - name: Configure Node test resources
-        run: echo "OPENCLAW_VITEST_MAX_WORKERS=2" >> "$GITHUB_ENV"
-
-      - name: Run Node 22 compatibility
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
-        run: |
-          pnpm build
-          pnpm ui:build
-          node openclaw.mjs --help
-          node openclaw.mjs status --json --timeout 1
-          pnpm test:build:singleton
-
-      - name: Publish trusted declaration cache artifact
-        if: success() && github.repository == 'openclaw/openclaw' && github.ref == 'refs/heads/main'
+      - name: Upload handoff payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          compression-level: 1
+          compression-level: 0
           if-no-files-found: error
-          include-hidden-files: true
-          name: build-all-cache-v1-${{ runner.os }}-${{ runner.arch }}-node-22.22.3
-          overwrite: true
-          path: .artifacts/build-all-cache
+          name: openclaw-mxc-windows-test-e763e44427
+          path: .artifacts/mxc-handoff/
           retention-days: 14
