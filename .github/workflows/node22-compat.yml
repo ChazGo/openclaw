@@ -103,7 +103,11 @@ jobs:
             const report = JSON.parse(
               fs.readFileSync(".artifacts/mxc-handoff/mxc-runtime-inspect.json", "utf8"),
             );
-            if (report.id !== "mxc" || report.status !== "loaded") {
+            if (
+              report.plugin?.id !== "mxc" ||
+              report.plugin?.status !== "loaded" ||
+              report.plugin?.origin !== "bundled"
+            ) {
               throw new Error(`MXC runtime proof failed: ${JSON.stringify(report)}`);
             }
           '
