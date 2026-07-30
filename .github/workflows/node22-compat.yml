@@ -69,8 +69,12 @@ jobs:
           cp "$installed_mxc/openclaw.plugin.json" "$bundled_mxc/"
           cp "$installed_mxc/npm-shrinkwrap.json" "$bundled_mxc/"
           cp "$installed_mxc/README.md" "$bundled_mxc/"
+          if [[ -d "$installed_mxc/node_modules" ]]; then
+            cp -a "$installed_mxc/node_modules/." "$bundled_mxc/node_modules/"
+          fi
           cp -a .artifacts/mxc-install/node_modules/. "$bundled_mxc/node_modules/"
           rm -rf "$bundled_mxc/node_modules/@openclaw/mxc-sandbox"
+          test -f "$bundled_mxc/node_modules/@microsoft/mxc-sdk/bin/x64/wxc-host-prep.exe"
 
           INSTALLED_MXC="$installed_mxc" BUNDLED_MXC="$bundled_mxc" node <<'NODE'
           const fs = require("node:fs");
