@@ -10,8 +10,10 @@ import type {
   LoadedSandboxBaselinePolicy,
   SandboxConfiguredPathEntry,
 } from "./sandbox-policy-loader.js";
+import { getMxcSecurityPreset, type MxcStandardFolderAccess } from "./security-level.js";
 import { buildCommandLine } from "./windows-command.js";
 import { normalizeWindowsProcessEnvRecord } from "./windows-env.js";
+import { resolveWindowsStandardFolders } from "./windows-known-folders.js";
 import {
   resolveMxcReadOnlySkillMounts,
   type MxcReadOnlySkillMount,
@@ -107,10 +109,12 @@ export function buildMxcContainerConfig(params: {
   env: Record<string, string>;
 }): ContainerConfig {
   const networkAllowed = params.config.network === "default";
+  const preset = getMxcSecurityPreset(params.config.securityLevel);
   const filesystem = buildFilesystemConfig({
     baseline: params.baseline,
     context: params.baselineContext,
     sandboxTempDir: params.sandboxTempDir,
+    standardFolderAccess: preset.standardFolderAccess,
     workspace: params.workspace,
   });
 
@@ -133,8 +137,8 @@ export function buildMxcContainerConfig(params: {
     },
     filesystem,
     ui: {
-      disable: true,
-      clipboard: "none",
+      disable: false,
+      clipboard: preset.clipboard,
       injection: false,
     },
     network: {
@@ -146,7 +150,7 @@ export function buildMxcContainerConfig(params: {
       leastPrivilege: true,
       capabilities: networkAllowed ? ["internetClient"] : [],
       ui: {
-        isolation: "container",
+        isolation: preset.clipboard === "none" ? "container" : "desktop",
         desktopSystemControl: false,
         systemSettings: "none",
         ime: false,
@@ -159,9 +163,18 @@ function buildFilesystemConfig(params: {
   baseline: LoadedSandboxBaselinePolicy;
   context: BaselineApplicationContext;
   sandboxTempDir: string;
+  standardFolderAccess: MxcStandardFolderAccess;
   workspace: MxcWorkspaceContext;
 }): MxcFilesystemConfig {
-  const readwritePathSpecs = resolveWorkspaceReadwritePathSpecs(params.workspace);
+  const standardFolders = Object.values(resolveWindowsStandardFolders()).filter(
+    (folder): folder is string => typeof folder === "string",
+  );
+  const readwritePathSpecs = [
+    ...resolveWorkspaceReadwritePathSpecs(params.workspace),
+    ...(params.standardFolderAccess === "readwrite"
+      ? standardFolders.map(optionalFilesystemPath)
+      : []),
+  ];
   const readonlyPathSpecs = [
     ...resolveWorkspaceReadonlyPathSpecs(params.workspace),
     ...resolveBaselineReadonlyPathSpecs(params.baseline, params.context),
@@ -181,16 +194,27 @@ function buildFilesystemConfig(params: {
     );
   }
 
+  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
+  if (params.standardFolderAccess === "readonly") {
+    readonlyPathSpecs.push(
+      ...standardFolders
+        .filter(
+          (standardFolder) =>
+            !readwritePaths.some((readwritePath) => pathsOverlap(readwritePath, standardFolder)),
+        )
+        .map(optionalFilesystemPath),
+    );
+  }
+
   const protectedSkillPolicyPaths = resolveMxcProtectedSkillPolicyPaths(params.workspace);
   // ProcessContainer writable-parent grants override nested read-only grants.
   // Fail closed instead of claiming protected skill overlays are enforceable.
   assertNoMxcReadwriteReadonlyOverlap({
-    readwritePaths: resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite"),
+    readwritePaths,
     readonlyPaths: protectedSkillPolicyPaths,
   });
 
   const readonlyPaths = resolveExistingFilesystemPaths(readonlyPathSpecs, "read-only");
-  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
   assertNoMxcReadwriteReadonlyOverlap({ readwritePaths, readonlyPaths });
 
   return {
@@ -364,10 +388,9 @@ function resolveProcessTimeoutSeconds(
   config: MxcConfig,
   baseline: LoadedSandboxBaselinePolicy,
 ): number {
-  if (config.timeoutSecondsConfigured === true) {
-    return Math.min(config.timeoutSeconds, baseline.process.timeoutSeconds);
-  }
-  return baseline.process.timeoutSeconds;
+  return baseline.process.timeoutSecondsConfigured
+    ? Math.min(config.timeoutSeconds, baseline.process.timeoutSeconds)
+    : config.timeoutSeconds;
 }
 
 function assertNoMxcReadwriteReadonlyOverlap(params: {

@@ -18,11 +18,14 @@ import { resolveConfig, type MxcConfig } from "../src/config.js";
 import { createMxcSandboxBackendFactory } from "../src/mxc-backend-factory.js";
 import { createMxcSandboxBackendHandle, mxcSandboxBackendManager } from "../src/mxc-backend.js";
 
-const { spawnCommandMock, execFileSyncMock, mockedHomeDir } = vi.hoisted(() => ({
-  spawnCommandMock: vi.fn(),
-  execFileSyncMock: vi.fn(),
-  mockedHomeDir: { value: undefined as string | undefined },
-}));
+const { spawnCommandMock, execFileSyncMock, mockedHomeDir, standardFoldersMock } = vi.hoisted(
+  () => ({
+    spawnCommandMock: vi.fn(),
+    execFileSyncMock: vi.fn(),
+    mockedHomeDir: { value: undefined as string | undefined },
+    standardFoldersMock: vi.fn(() => ({})),
+  }),
+);
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -44,11 +47,15 @@ vi.mock("../src/binary-resolver.js", () => ({
   resolveMxcBinaryPath: (configuredPath?: string) => configuredPath ?? "mxc-test-binary",
 }));
 
+vi.mock("../src/windows-known-folders.js", () => ({
+  resolveWindowsStandardFolders: standardFoldersMock,
+}));
+
 const baseConfig: MxcConfig = {
+  securityLevel: "Recommended",
   containment: "process",
   network: "none",
   timeoutSeconds: 120,
-  timeoutSecondsConfigured: true,
   debug: false,
 };
 
@@ -231,6 +238,8 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       stdout: Buffer.alloc(0),
       stderr: Buffer.alloc(0),
     });
+    standardFoldersMock.mockReset();
+    standardFoldersMock.mockReturnValue({});
     mockedHomeDir.value = mkdtempSync(path.join(tmpdir(), "mxc-test-home-"));
     testDirs.push(mockedHomeDir.value);
     baseParams.workdir = mkdtempSync(path.join(tmpdir(), "mxc-test-workspace-"));
@@ -275,15 +284,15 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       leastPrivilege: true,
       capabilities: [],
       ui: {
-        isolation: "container",
+        isolation: "desktop",
         desktopSystemControl: false,
         systemSettings: "none",
         ime: false,
       },
     });
     expect(ui).toEqual({
-      disable: true,
-      clipboard: "none",
+      disable: false,
+      clipboard: "read",
       injection: false,
     });
     expect(processConfig.commandLine).toBe(`${expectedShell} /d /s /c "echo hello"`);
@@ -388,7 +397,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         const network = objectField(cfg, "network");
         const env = stringArrayField(processConfig, "env");
         expect(cfg.containment).toBe("process");
-        expect(processContainer.ui).toMatchObject({ isolation: "container" });
+        expect(processContainer.ui).toMatchObject({ isolation: "desktop" });
         expect(processContainer.leastPrivilege).toBe(true);
         expect(processContainer.capabilities).toEqual([]);
         expect(network.enforcementMode).toBe("capabilities");
@@ -444,6 +453,112 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     expect(network.defaultPolicy).toBe("allow");
     expect(network.enforcementMode).toBe("capabilities");
     expect(processContainer.capabilities).toEqual(["internetClient"]);
+  });
+
+  test.each([
+    {
+      securityLevel: "Locked Down" as const,
+      networkPolicy: "block",
+      clipboard: "none",
+      isolation: "container",
+      timeout: 30_000,
+      folderAccess: "none",
+    },
+    {
+      securityLevel: "Recommended" as const,
+      networkPolicy: "allow",
+      clipboard: "read",
+      isolation: "desktop",
+      timeout: 60_000,
+      folderAccess: "readonly",
+    },
+    {
+      securityLevel: "Unprotected" as const,
+      networkPolicy: "allow",
+      clipboard: "all",
+      isolation: "desktop",
+      timeout: 300_000,
+      folderAccess: "readwrite",
+    },
+  ])(
+    "maps the $securityLevel preset into the final MXC payload",
+    async ({ securityLevel, networkPolicy, clipboard, isolation, timeout, folderAccess }) => {
+      const standardFolders = {
+        documents: path.join(mockedHomeDir.value ?? "", "Documents"),
+        downloads: path.join(mockedHomeDir.value ?? "", "Downloads"),
+        desktop: path.join(mockedHomeDir.value ?? "", "Desktop"),
+      };
+      for (const folder of Object.values(standardFolders)) {
+        mkdirSync(folder, { recursive: true });
+      }
+      standardFoldersMock.mockReturnValue(standardFolders);
+
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        config: resolveConfig({ securityLevel }),
+      });
+      const spec = await handle.buildExecSpec({
+        command: "echo hello",
+        env: {},
+        usePty: false,
+      });
+      const cfg = decodeContainerConfig(spec.argv);
+      const filesystem = objectField(cfg, "filesystem");
+      const network = objectField(cfg, "network");
+      const processConfig = objectField(cfg, "process");
+      const processContainer = objectField(cfg, "processContainer");
+      const ui = objectField(cfg, "ui");
+      const standardFolderPaths = Object.values(standardFolders).map((folder) =>
+        path.resolve(folder),
+      );
+
+      expect(network.defaultPolicy).toBe(networkPolicy);
+      expect(processConfig.timeout).toBe(timeout);
+      expect(ui).toMatchObject({ disable: false, clipboard, injection: false });
+      expect(processContainer.ui).toMatchObject({ isolation });
+      expect(
+        stringArrayField(filesystem, "readonlyPaths").filter((entry) =>
+          standardFolderPaths.includes(entry),
+        ),
+      ).toEqual(folderAccess === "readonly" ? standardFolderPaths : []);
+      expect(
+        stringArrayField(filesystem, "readwritePaths").filter((entry) =>
+          standardFolderPaths.includes(entry),
+        ),
+      ).toEqual(folderAccess === "readwrite" ? standardFolderPaths : []);
+
+      await handle.finalizeExec?.({
+        status: "completed",
+        exitCode: 0,
+        timedOut: false,
+        token: spec.finalizeToken,
+      });
+    },
+  );
+
+  test("writable workspaces take precedence over automatic read-only standard-folder grants", async () => {
+    const documents = path.join(mockedHomeDir.value ?? "", "Documents");
+    const downloads = path.join(mockedHomeDir.value ?? "", "Downloads");
+    const desktop = path.join(mockedHomeDir.value ?? "", "Desktop");
+    const workspace = path.join(documents, "OpenClaw");
+    for (const folder of [workspace, downloads, desktop]) {
+      mkdirSync(folder, { recursive: true });
+    }
+    standardFoldersMock.mockReturnValue({ documents, downloads, desktop });
+
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      workdir: workspace,
+      config: resolveConfig({ securityLevel: "Recommended" }),
+    });
+    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+    const filesystem = objectField(decodeContainerConfig(spec.argv), "filesystem");
+
+    expect(stringArrayField(filesystem, "readwritePaths")).toContain(path.resolve(workspace));
+    expect(stringArrayField(filesystem, "readonlyPaths")).not.toContain(path.resolve(documents));
+    expect(stringArrayField(filesystem, "readonlyPaths")).toEqual(
+      expect.arrayContaining([path.resolve(downloads), path.resolve(desktop)]),
+    );
   });
 
   test("Windows process containment caps long AppContainer names", async () => {
@@ -1118,7 +1233,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     expect(env).toContain("CUSTOM_VAR=value");
   });
 
-  test("timeout falls back to the sandbox baseline when config uses defaults", async () => {
+  test("sandbox policy can shorten the preset timeout", async () => {
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
       config: sandboxPolicyConfig(
@@ -1135,7 +1250,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     expect(processConfig.timeout).toBe(45_000);
   });
 
-  test("timeout falls back to the built-in baseline when no policy paths are configured", async () => {
+  test("the selected preset supplies the timeout when no policy path shortens it", async () => {
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
       config: resolveConfig({}),
@@ -1143,7 +1258,18 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
 
     const processConfig = objectField(decodeContainerConfig(spec.argv), "process");
-    expect(processConfig.timeout).toBe(300_000);
+    expect(processConfig.timeout).toBe(60_000);
+  });
+
+  test("an explicit timeout can exceed the built-in baseline without a policy ceiling", async () => {
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      config: resolveConfig({ timeoutSeconds: 600 }),
+    });
+    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+
+    const processConfig = objectField(decodeContainerConfig(spec.argv), "process");
+    expect(processConfig.timeout).toBe(600_000);
   });
 
   test("timeout policy caps explicit config timeouts", async () => {
@@ -1152,15 +1278,15 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       config: sandboxPolicyConfig(
         {
           filesystem: {},
-          process: { timeoutSeconds: 45 },
+          process: { timeoutSeconds: 600 },
         },
-        { ...baseConfig, timeoutSeconds: 120, timeoutSecondsConfigured: true },
+        { ...baseConfig, timeoutSeconds: 900 },
       ),
     });
     const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
 
     const processConfig = objectField(decodeContainerConfig(spec.argv), "process");
-    expect(processConfig.timeout).toBe(45_000);
+    expect(processConfig.timeout).toBe(600_000);
   });
 
   test("rejects per-command workdirs outside the sandbox workspace", async () => {
@@ -1271,9 +1397,11 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("runShellCommand uses the inline Windows command line when no args are passed", async () => {
+    let containerConfig: Record<string, unknown> | undefined;
     let processConfig: Record<string, unknown> | undefined;
     spawnCommandMock.mockImplementationOnce(async (argv: string[]) => {
-      processConfig = objectField(decodeContainerConfig(argv), "process");
+      containerConfig = decodeContainerConfig(argv);
+      processConfig = objectField(containerConfig, "process");
       return {
         code: 0,
         signal: null,
@@ -1293,6 +1421,14 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     const expectedShell = process.env.ComSpec?.trim() || "cmd.exe";
     expect(processConfig?.commandLine).toBe(`${expectedShell} /d /s /c "echo hello"`);
     expect(String(processConfig?.commandLine)).not.toContain(".openclaw-mxc-cmd-");
+    expect(objectField(containerConfig ?? {}, "ui")).toMatchObject({
+      clipboard: "none",
+    });
+    expect(objectField(objectField(containerConfig ?? {}, "processContainer"), "ui")).toMatchObject(
+      {
+        isolation: "container",
+      },
+    );
   });
 
   test("runShellCommand timeout is capped by sandbox policy", async () => {

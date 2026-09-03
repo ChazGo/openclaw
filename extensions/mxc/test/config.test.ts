@@ -6,26 +6,28 @@ describe("resolveConfig", () => {
   test("uses defaults only when config is omitted", () => {
     expect(resolveConfig(undefined)).toEqual({
       mxcBinaryPath: undefined,
+      securityLevel: "Recommended",
       containment: "process",
-      network: "none",
-      timeoutSeconds: 120,
+      network: "default",
+      timeoutSeconds: 60,
       debug: false,
     });
 
     const config = resolveConfig({});
     expect(config).toEqual({
       mxcBinaryPath: undefined,
+      securityLevel: "Recommended",
       containment: "process",
-      network: "none",
-      timeoutSeconds: 120,
+      network: "default",
+      timeoutSeconds: 60,
       debug: false,
       mxcPolicyPaths: undefined,
     });
-    expect(config).not.toHaveProperty("timeoutSecondsConfigured");
   });
 
-  test("applies valid overrides and preserves explicit timeout configuration", () => {
+  test("applies valid overrides", () => {
     const config = resolveConfig({
+      securityLevel: "Unprotected",
       mxcBinaryPath: "  C:\\custom\\wxc-exec.exe  ",
       containment: "processcontainer",
       network: "default",
@@ -39,15 +41,38 @@ describe("resolveConfig", () => {
 
     expect(config).toEqual({
       mxcBinaryPath: "C:\\custom\\wxc-exec.exe",
+      securityLevel: "Unprotected",
       containment: "processcontainer",
       network: "default",
       timeoutSeconds: 60,
-      timeoutSecondsConfigured: true,
       debug: true,
       mxcPolicyPaths: [
         "C:\\ProgramData\\openclaw\\mxc-machine-policy.json",
         "/opt/openclaw/mxc-user-policy.json",
       ],
+    });
+  });
+
+  test("does not allow the network override to weaken Locked Down", () => {
+    expect(resolveConfig({ securityLevel: "Locked Down", network: "default" }).network).toBe(
+      "none",
+    );
+    expect(resolveConfig({ securityLevel: "Recommended", network: "none" }).network).toBe("none");
+  });
+
+  test.each([
+    ["Locked Down", "none", 30],
+    ["Recommended", "default", 60],
+    ["Unprotected", "default", 300],
+  ] as const)("maps the %s preset defaults", (securityLevel, network, timeoutSeconds) => {
+    expect(resolveConfig({ securityLevel })).toEqual({
+      mxcBinaryPath: undefined,
+      securityLevel,
+      containment: "process",
+      network,
+      timeoutSeconds,
+      debug: false,
+      mxcPolicyPaths: undefined,
     });
   });
 
@@ -73,11 +98,12 @@ describe("resolveConfig", () => {
 
   test("rejects malformed enums and types instead of silently falling back", () => {
     expect(() => resolveConfig({ network: "allow-all" })).toThrow(/network/u);
+    expect(() => resolveConfig({ securityLevel: "Balanced" })).toThrow(/securityLevel/u);
     expect(() => resolveConfig({ debug: "true" })).toThrow(/debug/u);
     expect(() => resolveConfig({ mxcBinaryPath: "   " })).toThrow(/mxcBinaryPath/u);
   });
 
-  test("enforces timeout bounds and only marks configured timeouts when supplied", () => {
+  test("enforces timeout bounds", () => {
     expect(() => resolveConfig({ timeoutSeconds: 0 })).toThrow(/>= 1/u);
     expect(() => resolveConfig({ timeoutSeconds: -5 })).toThrow(/>= 1/u);
     expect(() => resolveConfig({ timeoutSeconds: "fast" })).toThrow(/timeoutSeconds/u);
@@ -87,7 +113,6 @@ describe("resolveConfig", () => {
 
     const config = resolveConfig({ timeoutSeconds: MAX_TIMER_TIMEOUT_SECONDS });
     expect(config.timeoutSeconds).toBe(MAX_TIMER_TIMEOUT_SECONDS);
-    expect(config.timeoutSecondsConfigured).toBe(true);
   });
 
   test("trims and validates mxcPolicyPaths as absolute paths", () => {
@@ -101,16 +126,23 @@ describe("resolveConfig", () => {
 });
 
 describe("createMxcPluginConfigSchema", () => {
-  test("publishes the same timeout cap in the plugin schema", () => {
+  test("publishes preset and timeout contracts in the plugin schema", () => {
     const jsonSchema = createMxcPluginConfigSchema().jsonSchema as {
-      properties?: { timeoutSeconds?: unknown };
+      properties?: { securityLevel?: unknown; timeoutSeconds?: unknown };
     };
+    expect(jsonSchema.properties?.securityLevel).toEqual({
+      type: "string",
+      enum: ["Locked Down", "Recommended", "Unprotected"],
+      default: "Recommended",
+      description:
+        "Windows-aligned baseline for network, standard folders, clipboard, and timeout.",
+    });
     expect(jsonSchema.properties?.timeoutSeconds).toEqual({
       type: "number",
       minimum: 1,
       maximum: MAX_TIMER_TIMEOUT_SECONDS,
       description:
-        "Per-command execution timeout in seconds. Capped to the sandbox policy baseline timeout when both are set.",
+        "Optional preset timeout override in seconds. Capped to the sandbox policy baseline timeout when both are set.",
     });
   });
 });

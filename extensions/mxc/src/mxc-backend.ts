@@ -276,9 +276,9 @@ export function createMxcSandboxBackendHandle(params: {
       // Shell commands use a restrictive policy (no network, 30s timeout)
       const restrictiveConfig: MxcConfig = {
         ...params.config,
+        securityLevel: "Locked Down",
         network: "none",
         timeoutSeconds: 30,
-        timeoutSecondsConfigured: true,
       };
       const effectiveWorkdir = path.resolve(params.workdir);
       const workspaceAccess = params.workspaceAccess ?? "rw";

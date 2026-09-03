@@ -10,6 +10,12 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "securityLevel": {
+        "type": "string",
+        "enum": ["Locked Down", "Recommended", "Unprotected"],
+        "default": "Recommended",
+        "description": "Windows-aligned baseline for network, standard folders, clipboard, and timeout."
+      },
       "mxcBinaryPath": {
         "type": "string",
         "minLength": 1,
@@ -23,13 +29,13 @@
       "network": {
         "type": "string",
         "enum": ["none", "default"],
-        "description": "Outbound network policy. 'none' blocks all network; 'default' allows outbound access via the internetClient capability."
+        "description": "Optional restrictive preset override. 'none' blocks all network; 'default' retains the selected preset's outbound policy."
       },
       "timeoutSeconds": {
         "type": "number",
         "minimum": 1,
         "maximum": 2147000,
-        "description": "Per-command execution timeout in seconds. Capped to the sandbox policy baseline timeout when both are set."
+        "description": "Optional preset timeout override in seconds. Capped to the sandbox policy baseline timeout when both are set."
       },
       "debug": {
         "type": "boolean",
@@ -46,9 +52,16 @@
     }
   },
   "configContracts": {
-    "dangerousFlags": [{ "path": "network", "equals": "default" }]
+    "dangerousFlags": [
+      { "path": "securityLevel", "equals": "Unprotected" },
+      { "path": "network", "equals": "default" }
+    ]
   },
   "uiHints": {
+    "securityLevel": {
+      "label": "Default sandbox security",
+      "help": "Recommended is intended for normal OpenClaw use. Locked Down disables internet and clipboard and adds no standard-folder grants. Unprotected grants broader filesystem and clipboard access but does not disable MXC containment."
+    },
     "mxcBinaryPath": {
       "label": "MXC Executor Path",
       "help": "Optional absolute path to the MXC executor (wxc-exec.exe). Leave unset to auto-discover from the installed @microsoft/mxc-sdk.",
@@ -60,11 +73,12 @@
     },
     "network": {
       "label": "Network Policy",
-      "help": "'none' blocks all outbound network; 'default' allows outbound access via the internetClient capability, which weakens sandbox isolation."
+      "help": "Optional restrictive override for the selected security preset. 'none' blocks all outbound network; 'default' retains the preset policy and cannot enable network for Locked Down.",
+      "advanced": true
     },
     "timeoutSeconds": {
-      "label": "Command Timeout (seconds)",
-      "help": "Per-command execution timeout, from 1 to 2147000 seconds. Capped to the sandbox policy baseline timeout when both are set.",
+      "label": "Command Timeout Override (seconds)",
+      "help": "Optional override for the selected security preset, from 1 to 2147000 seconds. Capped to the sandbox policy baseline timeout when both are set.",
       "advanced": true
     },
     "debug": {

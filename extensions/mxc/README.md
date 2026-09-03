@@ -46,24 +46,52 @@ readiness behavior to change as MXC host support matures.
 and out-of-range values fail plugin activation with an actionable error
 (`Invalid mxc plugin config: <reason>`) instead of falling back silently.
 
-| Field            | Type                              | Default                                | Notes                                                                                                                                                         |
-| ---------------- | --------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mxcBinaryPath`  | `string`                          | unset                                  | Non-empty override for the `wxc-exec.exe` executor path; see [SDK-only executor discovery](#supported).                                                       |
-| `containment`    | `"process" \| "processcontainer"` | `"process"`                            | Both currently resolve to Windows ProcessContainer.                                                                                                           |
-| `network`        | `"none" \| "default"`             | `"none"`                               | `"default"` allows outbound network via the `internetClient` capability.                                                                                      |
-| `timeoutSeconds` | `number`                          | unset (baseline default `300` applies) | Must be `>= 1` and `<= 2147000` (the largest Node-safe `setTimeout` delay in whole seconds). Capped to the sandbox policy baseline timeout when both are set. |
-| `debug`          | `boolean`                         | `false`                                | Forwards debug output from the MXC SDK launcher.                                                                                                              |
-| `mxcPolicyPaths` | `string[]`                        | unset (built-in baseline only)         | Every entry must be a non-empty absolute path. See [Sandbox policy files](#sandbox-policy-files).                                                             |
+| Field            | Type                                              | Default                | Notes                                                                                                                                   |
+| ---------------- | ------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `securityLevel`  | `"Locked Down" \| "Recommended" \| "Unprotected"` | `"Recommended"`        | Windows-aligned baseline for network, standard folders, clipboard, and timeout.                                                         |
+| `mxcBinaryPath`  | `string`                                          | unset                  | Non-empty override for the `wxc-exec.exe` executor path; see [SDK-only executor discovery](#supported).                                 |
+| `containment`    | `"process" \| "processcontainer"`                 | `"process"`            | Both currently resolve to Windows ProcessContainer.                                                                                     |
+| `network`        | `"none" \| "default"`                             | selected preset        | Optional restrictive override. `"none"` blocks outbound network; `"default"` retains the preset policy and cannot weaken `Locked Down`. |
+| `timeoutSeconds` | `number`                                          | selected preset        | Optional preset override from 1 through 2147000 seconds. The sandbox policy baseline can enforce a shorter timeout.                     |
+| `debug`          | `boolean`                                         | `false`                | Forwards debug output from the MXC SDK launcher.                                                                                        |
+| `mxcPolicyPaths` | `string[]`                                        | built-in baseline only | Every entry must be a non-empty absolute path. See [Sandbox policy files](#sandbox-policy-files).                                       |
 
 Any other key is rejected. `openclaw.plugin.json` publishes the same schema
 (enums, `minimum`/`maximum` bounds) so `openclaw config` validation and CLI
 help stay in sync with plugin runtime validation.
+
+### Security levels
+
+| Security level | Internet | Gateway identity's Documents / Downloads / Desktop | Clipboard  | Timeout     |
+| -------------- | -------- | -------------------------------------------------- | ---------- | ----------- |
+| `Locked Down`  | Off      | None                                               | None       | 30 seconds  |
+| `Recommended`  | On       | Read-only                                          | Read       | 60 seconds  |
+| `Unprotected`  | On       | Read-write                                         | Read-write | 300 seconds |
+
+Standard-folder grants use the Windows known-folder locations for the identity
+running the Gateway and honor folder redirection. The active workspace and MXC
+runtime paths remain available independently of the selected preset. When a
+writable workspace is inside one of those folders, the workspace grant takes
+precedence and MXC omits the overlapping automatic read-only folder grant.
+
+All presets disable input injection and desktop system control. `Locked Down`
+keeps ProcessContainer UI isolation. Clipboard-enabled presets use desktop UI
+isolation so their clipboard policy can reach the clipboard in the Gateway's
+Windows session; the top-level clipboard setting still independently enforces
+read-only or read-write access.
+
+Explicit `network: "none"` can tighten a clipboard-enabled preset, while
+`network: "default"` cannot enable network for `Locked Down`.
+`timeoutSeconds` overrides the preset timeout, subject to a shorter policy-file
+ceiling. Policy files can also add explicit filesystem paths.
 
 ## Supported
 
 - Windows hosts with the MXC executor installed through `@microsoft/mxc-sdk`.
 - Explicit opt-in after plugin install with `sandbox.backend: "mxc"`.
 - MXC `process` containment, which resolves to Windows ProcessContainer.
+- Windows-aligned `Locked Down`, `Recommended`, and `Unprotected` security
+  presets.
 - `workspaceAccess`:
   - `none`: only the isolated sandbox workdir is mounted, read-only. There is
     no separate mount for the real agent workspace.

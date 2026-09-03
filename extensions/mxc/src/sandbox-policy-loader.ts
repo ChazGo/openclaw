@@ -149,7 +149,7 @@ function parseSandboxPolicyLayer(value: unknown, sourceLabel: string): SandboxPo
 }
 
 function mergeSandboxPolicyLayers(sources: readonly SandboxPolicySource[]): SandboxPolicyLayer {
-  const timeoutCandidates = [DEFAULT_SANDBOX_BASELINE.process.timeoutSeconds];
+  const timeoutCandidates: number[] = [];
   const filesystem: BaselineFilesystemPolicyInput = {
     restrictToProjectDir: DEFAULT_SANDBOX_BASELINE.filesystem.restrictToProjectDir,
     additionalReadonlyPaths: [],
@@ -187,9 +187,13 @@ function mergeSandboxPolicyLayers(sources: readonly SandboxPolicySource[]): Sand
         (entry) => entry.path,
       ),
     },
-    process: {
-      timeoutSeconds: Math.min(...timeoutCandidates),
-    },
+    ...(timeoutCandidates.length > 0
+      ? {
+          process: {
+            timeoutSeconds: Math.min(...timeoutCandidates),
+          },
+        }
+      : {}),
     configuredPaths: {
       readonlyPaths: [...configuredPathMaps.readonlyPaths.values()],
       readwritePaths: [...configuredPathMaps.readwritePaths.values()],
