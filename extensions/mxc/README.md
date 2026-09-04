@@ -285,8 +285,12 @@ agents may still use them.
 
 ## Host readiness
 
-IsoEnvBroker must be available on the host OS. The plugin checks this before
-registering the sandbox backend.
+The plugin validates that its packaged MXC executor is present before
+registering the sandbox backend. The MXC `process` backend probes the available
+Windows containment tier at execution time and falls back from BaseContainer to
+its supported AppContainer path when needed. It does not require the legacy
+`IsoEnvBroker` service name; current SF2 builds expose the separate
+`IsolationSession` services instead.
 
 Host preparation is advisory. If directory listing inside the sandbox fails with
 `Access is denied`, run this once from an elevated prompt:

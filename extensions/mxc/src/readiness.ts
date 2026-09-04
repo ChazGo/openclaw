@@ -12,28 +12,6 @@ function resolveWindowsSystemExecutable(name: string): string {
   return path.win32.join(systemRoot || "C:\\Windows", "System32", name);
 }
 
-// The IsoEnvBroker service is demand-started, so it does not need to be RUNNING
-// at plugin load: we only require that it is installed. `sc.exe query` exits
-// non-zero (1060) when the service is absent, which surfaces as a thrown error;
-// a successful query means the service exists and Windows will start it on use.
-function assertWindowsIsoEnvBrokerInstalled(deps: ReadinessDeps): void {
-  try {
-    deps.execFileSync(resolveWindowsSystemExecutable("sc.exe"), ["query", "IsoEnvBroker"], {
-      encoding: "utf-8",
-      stdio: "pipe",
-      timeout: 5_000,
-      windowsHide: true,
-    });
-  } catch (error) {
-    const detail = error instanceof Error && error.message ? `: ${error.message.trim()}` : "";
-    throw new Error(
-      `[mxc] MXC Windows ProcessContainer sandbox is not ready: IsoEnvBroker service is not installed${detail}. ` +
-        `Install the IsoEnvBroker service before enabling MXC sandbox execution.`,
-      { cause: error },
-    );
-  }
-}
-
 // AppContainer processes need directory-traversal/list rights on the system
 // drive root (C:\) to enumerate directories inside the sandbox.
 // `wxc-host-prep prepare-system-drive` adds ACEs for the well-known
@@ -92,18 +70,4 @@ export function warnMxcHostPrepIfNeeded(
     const warn = params.warn ?? ((message: string) => console.warn(message));
     warn(systemDrivePrepWarning(process.env.SystemDrive || "C:"));
   }
-}
-
-export function assertMxcReadiness(
-  params: {
-    platform?: NodeJS.Platform;
-    deps?: Partial<ReadinessDeps>;
-  } = {},
-): void {
-  const platform = params.platform ?? process.platform;
-  if (platform !== "win32") {
-    return;
-  }
-  const deps = { ...DEFAULT_DEPS, ...params.deps };
-  assertWindowsIsoEnvBrokerInstalled(deps);
 }
