@@ -196,6 +196,8 @@ jobs:
           secret_eligible=false
           cache_write_allowed=false
           if [[
+            "$GITHUB_REPOSITORY" == "openclaw/openclaw"
+          ]] && [[
             "$GITHUB_EVENT_NAME" == "schedule" ||
             "$GITHUB_EVENT_NAME" == "workflow_dispatch"
           ]] && [[
