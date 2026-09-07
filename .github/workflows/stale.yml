@@ -37,8 +37,11 @@ env:
 permissions: {}
 
 jobs:
+  # These jobs authenticate as GitHub Apps installed only on the canonical
+  # repo; forks lack GH_APP_PRIVATE_KEY(_FALLBACK), so every job below is
+  # scoped to openclaw/openclaw to avoid failing on every scheduled run.
   stale:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: write
       pull-requests: write
@@ -247,7 +250,7 @@ jobs:
             That channel is the escape hatch for high-quality PRs that get auto-closed.
 
   stale-bug-verification:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: write
     runs-on: ubuntu-24.04
@@ -431,7 +434,7 @@ jobs:
               .write();
 
   backfill-stale-closures:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_stale_closures == true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && github.event_name == 'workflow_dispatch' && inputs.backfill_stale_closures == true }}
     permissions:
       issues: write
       pull-requests: write
@@ -684,7 +687,7 @@ jobs:
 
   audit-bug-closure-reasons:
     needs: stale
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: read
     runs-on: ubuntu-24.04
@@ -784,7 +787,7 @@ jobs:
 
   lock-closed-issues:
     needs: stale
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: write
     runs-on: blacksmith-16vcpu-ubuntu-2404
