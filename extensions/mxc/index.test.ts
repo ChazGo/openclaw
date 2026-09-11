@@ -21,4 +21,20 @@ describe("mxc plugin entry", () => {
   it("wires the runtime config schema into the plugin entry and manifest", () => {
     expect(plugin.configSchema?.jsonSchema).toEqual(manifest.configSchema);
   });
+
+  it("publishes the security preset contract", () => {
+    expect(manifest.configSchema.properties.securityLevel).toMatchObject({
+      enum: ["Locked Down", "Recommended", "Unprotected"],
+      default: "Recommended",
+    });
+    expect(manifest.configContracts.dangerousFlags).toContainEqual({
+      path: "securityLevel",
+      equals: "Unprotected",
+    });
+    expect(manifest.uiHints.securityLevel).toMatchObject({
+      label: "Default sandbox security",
+    });
+    expect(manifest.uiHints.securityLevel).not.toHaveProperty("advanced");
+    expect(manifest.uiHints.network.advanced).toBe(true);
+  });
 });

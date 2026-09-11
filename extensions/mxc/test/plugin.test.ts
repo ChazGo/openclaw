@@ -119,7 +119,7 @@ describe("registerMxcPlugin", () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    assertMxcReadinessMock.mockClear();
+    assertMxcReadinessMock.mockReset();
     warnMxcHostPrepIfNeededMock.mockClear();
     createMxcSandboxBackendFactoryMock.mockClear();
     resolveMxcBinaryPathMock.mockReset();
@@ -147,7 +147,6 @@ describe("registerMxcPlugin", () => {
       "[mxc] Sandbox backend is Windows-only and not available on darwin. Plugin will be dormant.",
     );
     expect(resolveMxcBinaryPathMock).not.toHaveBeenCalled();
-    expect(assertMxcReadinessMock).not.toHaveBeenCalled();
     expect(readBackend()).toEqual(original);
     expect(lifecycles).toEqual([]);
     expect(registerService).not.toHaveBeenCalled();
@@ -166,7 +165,6 @@ describe("registerMxcPlugin", () => {
 
       expect(warnSpy).not.toHaveBeenCalled();
       expect(resolveMxcBinaryPathMock).not.toHaveBeenCalled();
-      expect(assertMxcReadinessMock).not.toHaveBeenCalled();
       expect(warnMxcHostPrepIfNeededMock).not.toHaveBeenCalled();
       expect(createMxcSandboxBackendFactoryMock).not.toHaveBeenCalled();
       expect(readBackend()).toEqual(original);
@@ -184,7 +182,6 @@ describe("registerMxcPlugin", () => {
       registerMxcPlugin(api);
 
       expect(resolveMxcBinaryPathMock).toHaveBeenCalledWith(undefined);
-      expect(assertMxcReadinessMock).toHaveBeenCalledWith();
       expect(warnMxcHostPrepIfNeededMock).toHaveBeenCalledWith();
       expect(createMxcSandboxBackendFactoryMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -202,6 +199,21 @@ describe("registerMxcPlugin", () => {
       expect(readBackend()).toEqual(original);
     },
   );
+
+  test("registers without the legacy IsoEnvBroker service gate", () => {
+    assertMxcReadinessMock.mockImplementation(() => {
+      throw new Error("IsoEnvBroker service is not installed");
+    });
+    const { api } = createApi();
+
+    expect(() => registerMxcPlugin(api)).not.toThrow();
+    expect(assertMxcReadinessMock).not.toHaveBeenCalled();
+    expect(readBackend()).toEqual({
+      factory: expect.any(Function),
+      manager: mxcSandboxBackendManagerMock,
+      resolveWorkdir: null,
+    });
+  });
 
   test.each(["disable", "restart", "reset", "delete"] as const)(
     "preserves backend hooks during scoped %s cleanup",
@@ -283,7 +295,6 @@ describe("registerMxcPlugin", () => {
     );
 
     expect(warnSpy).not.toHaveBeenCalled();
-    expect(assertMxcReadinessMock).not.toHaveBeenCalled();
     expect(readBackend()).toEqual(original);
     expect(lifecycles).toEqual([]);
     expect(registerService).not.toHaveBeenCalled();
