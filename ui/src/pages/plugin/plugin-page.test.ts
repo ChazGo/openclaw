@@ -528,6 +528,7 @@ describe("PluginPage", () => {
 
       postMessage.mockClear();
       page.remove();
+      await page.updateComplete;
       document.documentElement.dataset.themeMode = "dark";
       frame.dispatchEvent(new Event("load"));
       await Promise.resolve();

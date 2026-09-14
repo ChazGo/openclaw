@@ -240,6 +240,9 @@ export class PluginPage extends OpenClawLightDomContentsElement {
   }
 
   override updated() {
+    if (!this.isConnected) {
+      return;
+    }
     this.syncPluginThemeFrame(this.querySelector<HTMLIFrameElement>(".plugin-tab-embed__frame"));
   }
 
