@@ -1,4 +1,3 @@
-import { posix, win32 } from "node:path";
 import { buildPluginConfigSchema, type OpenClawPluginConfigSchema } from "openclaw/plugin-sdk/core";
 import {
   formatPluginConfigIssue,
@@ -22,7 +21,14 @@ export type MxcConfig = {
   timeoutSecondsConfigured?: boolean;
   debug: boolean;
   mxcPolicyPaths?: string[];
+  agents?: Record<string, MxcAgentConfig>;
 };
+
+type MxcAgentConfig = Partial<Pick<MxcConfig, "network" | "timeoutSeconds" | "mxcPolicyPaths">>;
+
+// Validate ownership keys, rather than repairing a typo into a different policy owner.
+const CANONICAL_AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const ABSOLUTE_POLICY_PATH = /^\s*(?:[a-zA-Z]:[\\/]|[\\/])/;
 
 const DEFAULT_CONTAINMENT: MxcContainment = "process";
 const DEFAULT_NETWORK: MxcNetworkMode = "none";
@@ -32,7 +38,7 @@ const DEFAULT_DEBUG = false;
 const nonEmptyTrimmedString = (message: string) =>
   z.string({ error: message }).trim().min(1, { error: message });
 
-const MxcPluginConfigSchema = z.strictObject({
+const MxcDefaultConfigSchema = z.strictObject({
   mxcBinaryPath: nonEmptyTrimmedString("mxcBinaryPath must be a non-empty string")
     .describe(
       "Absolute path to the MXC executor (wxc-exec.exe). When unset, the executor is discovered from the installed @microsoft/mxc-sdk.",
@@ -71,11 +77,29 @@ const MxcPluginConfigSchema = z.strictObject({
     .describe("Forward verbose debug output from the MXC SDK launcher.")
     .optional(),
   mxcPolicyPaths: z
-    .array(nonEmptyTrimmedString("mxcPolicyPaths must be an array of non-empty strings"), {
-      error: "mxcPolicyPaths must be an array of non-empty strings",
-    })
+    .array(
+      nonEmptyTrimmedString("mxcPolicyPaths must be an array of non-empty strings").regex(
+        ABSOLUTE_POLICY_PATH,
+        "mxcPolicyPaths entries must be absolute paths",
+      ),
+      {
+        error: "mxcPolicyPaths must be an array of non-empty strings",
+      },
+    )
     .describe(
       "Absolute MXC policy file paths applied on top of the built-in sandbox baseline policy.",
+    )
+    .optional(),
+});
+
+const MxcPluginConfigSchema = MxcDefaultConfigSchema.extend({
+  agents: z
+    .record(
+      z.string().regex(CANONICAL_AGENT_ID),
+      MxcDefaultConfigSchema.pick({ network: true, timeoutSeconds: true, mxcPolicyPaths: true }),
+    )
+    .describe(
+      "Per-agent policy defaults overrides, keyed by configured canonical agent ID. Explicit policy file lists replace plugin defaults, including empty lists.",
     )
     .optional(),
 });
@@ -124,7 +148,8 @@ export function resolveConfig(value: unknown): MxcConfig {
     network: config.network ?? DEFAULT_NETWORK,
     timeoutSeconds: config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
     debug: config.debug ?? DEFAULT_DEBUG,
-    mxcPolicyPaths: resolveMxcPolicyPaths(config.mxcPolicyPaths),
+    mxcPolicyPaths: config.mxcPolicyPaths,
+    ...(config.agents !== undefined ? { agents: config.agents } : {}),
   };
 
   if (config.timeoutSeconds !== undefined) {
@@ -134,20 +159,31 @@ export function resolveConfig(value: unknown): MxcConfig {
   return resolved;
 }
 
-function resolveMxcPolicyPaths(value: string[] | undefined): string[] | undefined {
-  if (value === undefined) {
-    return undefined;
+export function resolveMxcAgentConfig(
+  config: MxcConfig,
+  agentId: string | undefined,
+  scope: string,
+): MxcConfig {
+  const { agents, ...defaults } = config;
+  if (Object.keys(agents ?? {}).length > 0 && (!agentId || !CANONICAL_AGENT_ID.test(agentId))) {
+    throw new Error(
+      "MXC per-agent policy requires a resolved canonical agentId from the host; update OpenClaw.",
+    );
   }
-  return value.map((entry, index) => {
-    if (!isAbsolutePath(entry)) {
-      throw new Error(
-        `Invalid mxc plugin config: mxcPolicyPaths[${index}] must be an absolute path`,
-      );
-    }
-    return entry;
-  });
-}
-
-function isAbsolutePath(value: string): boolean {
-  return win32.isAbsolute(value) || posix.isAbsolute(value);
+  const override =
+    agentId && agents && Object.hasOwn(agents, agentId) ? agents[agentId] : undefined;
+  if (override && scope === "shared") {
+    throw new Error(
+      "MXC per-agent policy cannot use shared sandbox scope; select agent or session scope.",
+    );
+  }
+  // Snapshot the selected list: explicit [] replaces default grants, never unions them.
+  const policyPaths = override?.mxcPolicyPaths ?? defaults.mxcPolicyPaths;
+  return {
+    ...defaults,
+    network: override?.network ?? defaults.network,
+    timeoutSeconds: override?.timeoutSeconds ?? defaults.timeoutSeconds,
+    ...(policyPaths !== undefined ? { mxcPolicyPaths: [...policyPaths] } : {}),
+    ...(override?.timeoutSeconds !== undefined ? { timeoutSecondsConfigured: true } : {}),
+  };
 }
