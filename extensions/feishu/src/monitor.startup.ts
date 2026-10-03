@@ -1,4 +1,3 @@
-// Feishu plugin module implements monitor.startup behavior.
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -14,7 +13,6 @@ const FEISHU_STARTUP_BOT_INFO_TIMEOUT_MS = resolveStartupProbeTimeoutMs();
 type FetchBotOpenIdOptions = {
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
-  timeoutMs?: number;
   allowCachedFallback?: boolean;
 };
 
@@ -85,7 +83,7 @@ export async function fetchBotIdentityForMonitor(
     return {};
   }
 
-  const timeoutMs = options.timeoutMs ?? FEISHU_STARTUP_BOT_INFO_TIMEOUT_MS;
+  const timeoutMs = FEISHU_STARTUP_BOT_INFO_TIMEOUT_MS;
   const result = await probeFeishu(account, {
     timeoutMs,
     abortSignal: options.abortSignal,

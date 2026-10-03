@@ -97,8 +97,10 @@ export async function createCanonicalForkNativeFixture(
     codexForkTurn("original-1", "inherited one"),
     codexForkTurn("original-2", "inherited two"),
   ]);
+  const desktopLifetime = new AbortController();
   const desktopGeneration = desktopGenerationFingerprint
     ? createCodexDesktopGenerationOwner({
+        signal: desktopLifetime.signal,
         initialGeneration: { epoch: 1, fingerprint: desktopGenerationFingerprint },
         readFingerprint: async () => desktopGenerationFingerprint,
       })
@@ -166,7 +168,7 @@ export async function createCanonicalForkNativeFixture(
         return { requirements: null };
       }
       if (method === "config/read") {
-        return { config: {}, layers: [] };
+        return { config: {}, origins: {}, layers: [] };
       }
       if (method === "app/installed" || method === "app/read") {
         if (typeof params.threadId === "string" && !loaded.has(params.threadId)) {
@@ -459,7 +461,8 @@ export async function createCanonicalForkNativeFixture(
       for (const mock of desktopMocks) {
         mock.mockRestore();
       }
-      desktopGeneration?.stop();
+      desktopLifetime.abort();
+      await desktopGeneration?.waitForIdle();
     },
   };
 }

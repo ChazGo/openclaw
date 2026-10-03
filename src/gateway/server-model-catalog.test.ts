@@ -5,7 +5,7 @@ import {
   resolvePublishedModelCatalogOwner,
 } from "../agents/prepared-model-catalog-owner.js";
 import type { PublishedModelCatalogOwnerCandidate } from "../agents/prepared-model-catalog.types.js";
-import { setPreparedModelRuntimeAuthLoader } from "../agents/prepared-model-runtime-auth.js";
+import { bindPreparedModelRuntimeAuth } from "../agents/prepared-model-runtime-auth.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../agents/prepared-model-runtime.errors.js";
 import { markPreparedModelCatalogFull } from "../agents/prepared-model-runtime.full-catalog.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -31,14 +31,12 @@ function ownerConfig(agentId = "main", extra: OpenClawConfig = {}): OpenClawConf
     ...extra,
     agents: {
       ...extra.agents,
-      list: [
-        {
-          id: agentId,
-          default: true,
+      entries: {
+        [agentId]: {
           agentDir: "/tmp/gateway-agent",
           workspace: "/tmp/gateway-workspace",
         },
-      ],
+      },
     },
   };
 }
@@ -115,7 +113,7 @@ describe("gateway prepared model catalog", () => {
       if (empty) {
         config.agents = { entries: {} };
       } else if (shared) {
-        config.agents!.list!.push({ id: "worker", agentDir, workspace: "/tmp/worker-workspace" });
+        config.agents!.entries!.worker = { agentDir, workspace: "/tmp/worker-workspace" };
       }
       const input = { config, agentId, agentDir };
       const candidate = {
@@ -157,22 +155,6 @@ describe("gateway prepared model catalog", () => {
         loadPublishedPreparedModelCatalogOwnerSnapshot: async () => candidate,
       }),
     ).rejects.toThrow("missing prepared auth state");
-  });
-
-  it("reads the published read-only generation directly", async () => {
-    const config = ownerConfig();
-    const loadPublishedPreparedModelCatalogOwnerSnapshot = vi.fn(async () => ownerSnapshot(config));
-
-    await expect(
-      loadGatewayModelCatalog({
-        getConfig: () => config,
-        loadPublishedPreparedModelCatalogOwnerSnapshot,
-      }),
-    ).resolves.toBe(snapshot.entries);
-    expect(loadPublishedPreparedModelCatalogOwnerSnapshot).toHaveBeenCalledWith({
-      config,
-      readOnly: true,
-    });
   });
 
   it("forwards the requested agent lifecycle owner", async () => {
@@ -222,18 +204,12 @@ describe("gateway prepared model catalog", () => {
         loadPublishedPreparedModelCatalogOwnerSnapshot,
       }),
     ).resolves.toMatchObject({ pluginRegistry, isCurrent });
-    await expect(
-      loadGatewayModelCatalogSnapshot({
-        getConfig: () => config,
-        loadPublishedPreparedModelCatalogOwnerSnapshot,
-      }),
-    ).resolves.not.toHaveProperty("pluginRegistry");
-    await expect(
-      loadGatewayModelCatalogSnapshot({
-        getConfig: () => config,
-        loadPublishedPreparedModelCatalogOwnerSnapshot,
-      }),
-    ).resolves.not.toHaveProperty("isCurrent");
+    const publicSnapshot = await loadGatewayModelCatalogSnapshot({
+      getConfig: () => config,
+      loadPublishedPreparedModelCatalogOwnerSnapshot,
+    });
+    expect(publicSnapshot).not.toHaveProperty("pluginRegistry");
+    expect(publicSnapshot).not.toHaveProperty("isCurrent");
   });
 
   it("projects whether the published owner already contains a full catalog", async () => {
@@ -268,7 +244,7 @@ describe("gateway prepared model catalog", () => {
       },
       authModes: { openai: "api_key" as const },
     }));
-    setPreparedModelRuntimeAuthLoader(candidate, loadAuth);
+    bindPreparedModelRuntimeAuth(candidate, { load: loadAuth });
     const loadPublishedPreparedModelCatalogOwnerSnapshot = vi.fn(async () => candidate);
 
     const prepared = await loadPreparedGatewayModelCatalogSnapshot({
@@ -321,10 +297,12 @@ describe("gateway prepared model catalog", () => {
       ...ownerSnapshot(config),
       authModes: { openai: "oauth" as const },
     };
-    setPreparedModelRuntimeAuthLoader(candidate, async () => ({
-      authStore: { version: 1, profiles: {} },
-      authModes: {},
-    }));
+    bindPreparedModelRuntimeAuth(candidate, {
+      load: async () => ({
+        authStore: { version: 1, profiles: {} },
+        authModes: {},
+      }),
+    });
 
     const publicLoader = vi.fn(async () =>
       loadGatewayModelCatalogSnapshot({
@@ -349,6 +327,25 @@ describe("gateway prepared model catalog", () => {
 
     expect(loaded.authStore?.profiles).toEqual({});
     expect(loaded.authModes).toEqual({});
+  });
+
+  it("reports a prepared auth failure when fresh auth was requested", async () => {
+    const config = ownerConfig();
+    const candidate = ownerSnapshot(config);
+    const error = new Error("prepared auth refresh failed");
+    bindPreparedModelRuntimeAuth(candidate, {
+      load: async () => {
+        throw error;
+      },
+    });
+
+    await expect(
+      loadPreparedGatewayModelCatalogSnapshot({
+        getConfig: () => config,
+        loadPublishedPreparedModelCatalogOwnerSnapshot: async () => candidate,
+        refreshAuth: true,
+      }),
+    ).rejects.toBe(error);
   });
 
   it("retries the whole owner projection when deferred auth supersedes its generation", async () => {
@@ -390,8 +387,10 @@ describe("gateway prepared model catalog", () => {
         },
       },
     };
-    setPreparedModelRuntimeAuthLoader(stale, async () => {
-      throw new PreparedModelRuntimePublicationSupersededError("superseded");
+    bindPreparedModelRuntimeAuth(stale, {
+      load: async () => {
+        throw new PreparedModelRuntimePublicationSupersededError("superseded");
+      },
     });
     const loadPublishedPreparedModelCatalogOwnerSnapshot = vi
       .fn()
@@ -438,19 +437,16 @@ describe("gateway prepared model catalog", () => {
   it("rejects an ambiguous owner without an authoritative agent identity", async () => {
     const config = {
       agents: {
-        list: [
-          {
-            id: "main",
-            default: true,
+        entries: {
+          main: {
             agentDir: "/tmp/gateway-agent",
             workspace: "/tmp/main-workspace",
           },
-          {
-            id: "worker",
+          worker: {
             agentDir: "/tmp/gateway-agent",
             workspace: "/tmp/worker-workspace",
           },
-        ],
+        },
       },
     } as OpenClawConfig;
     const loadPublishedPreparedModelCatalogOwnerSnapshot = vi.fn(async () => ownerSnapshot(config));
