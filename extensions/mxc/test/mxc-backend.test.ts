@@ -243,6 +243,56 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     }
   });
 
+  test.each(["host", "registration"])(
+    "retained factory handles reject expired %s authority",
+    async (authority) => {
+      const reason = "retired";
+      let current = true;
+      const assertRuntimeCurrent = () => {
+        if (!current) {
+          throw new Error("owner " + reason);
+        }
+      };
+      const factory = createMxcSandboxBackendFactory(
+        resolveConfig({
+          agents: { analyst: { network: "none" } },
+        }),
+        authority === "registration" ? assertRuntimeCurrent : undefined,
+      );
+      const handle = await factory({
+        agentId: "analyst",
+        sessionKey: "opaque-owner-test",
+        scopeKey: "agent:analyst",
+        workspaceDir: baseParams.workdir,
+        agentWorkspaceDir: baseParams.workdir,
+        cfg: createSandboxBackendTestConfig({ scope: "agent" }),
+        assertRuntimeCurrent: authority === "host" ? assertRuntimeCurrent : undefined,
+      });
+      const spec = await handle.buildExecSpec({ command: "echo admitted", env: {}, usePty: false });
+      try {
+        current = false;
+        expect(() => spec.assertCurrent?.()).toThrow("owner " + reason);
+        await expect(
+          handle.buildExecSpec({ command: "echo stale", env: {}, usePty: false }),
+        ).rejects.toThrow("owner " + reason);
+        await expect(handle.runShellCommand({ script: "echo stale" })).rejects.toThrow(
+          "owner " + reason,
+        );
+        await expect(handle.validateWorkdir?.(baseParams.workdir)).rejects.toThrow(
+          "owner " + reason,
+        );
+        expect(spawnCommandMock).not.toHaveBeenCalled();
+      } finally {
+        await handle.finalizeExec?.({
+          status: "failed",
+          exitCode: null,
+          timedOut: false,
+          token: spec.finalizeToken,
+        });
+      }
+    },
+  );
+
   test("buildExecSpec returns a launcher argv with Windows process containment by default", async () => {
     const handle = createMxcSandboxBackendHandle(baseParams);
     const spec = await handle.buildExecSpec({

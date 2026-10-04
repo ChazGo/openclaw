@@ -9,6 +9,11 @@ import {
   resolveMxcAgentConfig,
 } from "../../extensions/mxc/test-api.js";
 import {
+  createOperationalRunInstanceRef,
+  prepareAgentRunAdmission,
+  resolveAdmittedRunActiveAssertion,
+} from "../../src/agents/admitted-run-context.js";
+import {
   registerSandboxBackend,
   type CreateSandboxBackendParams,
 } from "../../src/agents/sandbox/backend.js";
@@ -115,6 +120,82 @@ afterAll(async () => {
 });
 
 describe("MXC sandbox context composition", () => {
+  it.runIf(process.platform === "win32").each(["released", "reassigned"])(
+    "rejects retained effects after the admitted owner is %s",
+    async (retirement) => {
+      const root = await createSandboxFixtureDir("mxc-owner-" + retirement);
+      const workspaceDir = path.join(root, "workspace");
+      await fs.mkdir(workspaceDir);
+      const config = sandboxConfig("mxc", { scope: "agent", workspaceAccess: "rw" });
+      config.session = { store: path.join(root, "sessions.json") };
+      const runId = "mxc-retained-owner-" + retirement;
+      const prepare = () =>
+        prepareAgentRunAdmission({
+          cfg: config,
+          facts: {
+            runId,
+            agentId: "analyst",
+            ingress: { kind: "system", boundary: "test", state: "present" },
+          },
+          operationalRunInstance: createOperationalRunInstanceRef(runId),
+        });
+      const owner = prepare();
+      const replacement = prepare();
+      const restore = registerSandboxBackend(
+        "mxc",
+        createMxcSandboxBackendFactory(resolveConfig({ agents: { analyst: { network: "none" } } })),
+      );
+      try {
+        const admitted = await owner.admit("embedded");
+        const sandbox = await resolveSandboxContext({
+          config,
+          agentId: "analyst",
+          sessionKey: "agent:analyst:owner-" + retirement,
+          workspaceDir,
+          assertCurrent: resolveAdmittedRunActiveAssertion(admitted),
+          admittedRunContext: admitted,
+        });
+        const backend = sandbox!.backend!;
+        const spec = await backend.buildExecSpec({
+          command: "echo admitted",
+          env: {},
+          usePty: false,
+        });
+        try {
+          if (retirement === "released") {
+            owner.close();
+          } else {
+            await replacement.admit("embedded");
+          }
+          expect(() => spec.assertCurrent?.()).toThrow("no longer active");
+          await expect(
+            backend.buildExecSpec({ command: "echo stale", env: {}, usePty: false }),
+          ).rejects.toThrow("no longer active");
+          await expect(backend.runShellCommand({ script: "echo stale" })).rejects.toThrow(
+            "no longer active",
+          );
+          await expect(
+            sandbox!.fsBridge!.writeFile({ filePath: "retired.txt", data: "must not be written" }),
+          ).rejects.toThrow("no longer active");
+          await expect(fs.stat(path.join(workspaceDir, "retired.txt"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        } finally {
+          await backend.finalizeExec?.({
+            status: "failed",
+            exitCode: null,
+            timedOut: false,
+            token: spec.finalizeToken,
+          });
+        }
+      } finally {
+        owner.close();
+        replacement.close();
+        restore();
+      }
+    },
+  );
+
   it.each(["ro", "none"] as const)(
     "composes private skill selection with selected MXC policy for %s workspace callbacks",
     async (workspaceAccess) => {

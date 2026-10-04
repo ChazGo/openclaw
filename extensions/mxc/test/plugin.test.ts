@@ -30,9 +30,11 @@ const {
   return {
     assertMxcReadinessMock: vi.fn<(params: { executablePath: string }) => void>(),
     warnMxcHostPrepIfNeededMock: vi.fn(),
-    createMxcSandboxBackendFactoryMock: vi.fn(() => async () => {
-      throw new Error("MXC provider must not run in registration tests");
-    }),
+    createMxcSandboxBackendFactoryMock: vi.fn(
+      (_config: unknown, _assertCurrent?: () => void) => async () => {
+        throw new Error("MXC provider must not run in registration tests");
+      },
+    ),
     mxcSandboxBackendManagerMock: { describeRuntime: vi.fn(), removeRuntime: vi.fn() },
     resolveMxcBinaryPathMock: vi.fn(() => "mxc-test-binary"),
     readinessProbeExecMock: vi.fn(),
@@ -210,13 +212,18 @@ describe("registerMxcPlugin", () => {
       expect.objectContaining({
         timeoutSeconds: 60,
       }),
+      expect.any(Function),
     );
+    const assertCurrent = createMxcSandboxBackendFactoryMock.mock.calls.at(-1)?.[1];
+    expect(assertCurrent).toBeTypeOf("function");
+    expect(() => assertCurrent?.()).not.toThrow();
     expect(readBackend()).toEqual({
       factory: expect.any(Function),
       manager: mxcSandboxBackendManagerMock,
       resolveWorkdir: null,
     });
     await cleanup({ reason: "restart" });
+    expect(() => assertCurrent?.()).toThrow("registration retired");
     expect(readBackend()).toEqual(original);
     await stop();
     expect(readBackend()).toEqual(original);

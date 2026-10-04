@@ -118,8 +118,14 @@ skill sandbox paths that core forces to isolated scope remain supported. With no
 selected override, existing shared-scope behavior is unchanged.
 
 Policy files are loaded when each backend handle is created. Editing a file does
-not revoke grants from an existing handle or an in-flight command. Every command
-still receives a fresh native container ID and `destroyOnExit`; scope controls
+not revoke grants from an existing handle or an in-flight command. This snapshot
+is not execution authority: MXC retains the host's `assertRuntimeCurrent` callback
+and rejects new work after that owner retires or is replaced. The exec spec carries
+the same callback through core's deferred native process admission; cleanup remains
+available after retirement. Disabling or replacing the plugin registration also
+retires its retained factories, handles, and exec specs; resolve a fresh context
+after reload. Every command still receives a fresh native container ID and
+`destroyOnExit`; scope controls
 workspace reuse, not native container lifetime. Internal filesystem shell helpers
 always block network and use the smallest of 30 seconds, the configured timeout,
 and the selected policy baseline timeout.

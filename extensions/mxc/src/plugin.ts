@@ -45,8 +45,13 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   // directory-access ACEs, which only degrades in-sandbox directory listing.
   warnMxcHostPrepIfNeeded();
 
+  let retired = false;
   const unregister = registerSandboxBackend("mxc", {
-    factory: createMxcSandboxBackendFactory(config),
+    factory: createMxcSandboxBackendFactory(config, () => {
+      if (retired) {
+        throw new Error("MXC sandbox registration retired; resolve a new sandbox context.");
+      }
+    }),
     manager: mxcSandboxBackendManager,
   });
 
@@ -58,6 +63,7 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
         return;
       }
       if (reason === "disable" || reason === "restart") {
+        retired = true;
         unregister();
       }
     },
