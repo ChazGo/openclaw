@@ -50,17 +50,21 @@ const containerEngineMocks = vi.hoisted(() => ({
   resolvePodmanSandboxRuntimeInfo: vi.fn(),
 }));
 
+// mock-isolation: Keep fixture runtime discovery and registry writes out of the shared state DB.
 vi.mock("../../src/agents/sandbox/registry.js", () => ({
   readRegisteredSandboxRuntimeIds: readRegisteredSandboxRuntimeIdsMock,
   updateRegistry: updateRegistryMock,
 }));
 
+// mock-isolation: MXC context composition excludes browser container and bridge lifecycle state.
 vi.mock("../../src/agents/sandbox/browser.js", () => ({
   ensureSandboxBrowser: ensureSandboxBrowserMock,
 }));
 
+// mock-isolation: Use fixed test credentials without loading browser plugin auth or generating config state.
 vi.mock("../../src/plugin-sdk/browser-control-auth.js", () => browserControlAuthMock);
 
+// mock-isolation: Use fixture browser defaults without resolving activated browser plugin profiles.
 vi.mock("../../src/plugin-sdk/browser-profiles.js", () => browserProfilesMock);
 
 vi.mock("../../src/agents/sandbox/docker.js", async () => {
@@ -73,14 +77,17 @@ vi.mock("../../src/agents/sandbox/docker.js", async () => {
   };
 });
 
+// mock-isolation: Pin skill node eligibility without reading host exec approval state.
 vi.mock("../../src/agents/exec-defaults.js", () => ({
   resolveNodeExecEligibility: resolveNodeExecEligibilityMock,
 }));
 
+// mock-isolation: Use fixed skill eligibility without consulting process-wide remote node state.
 vi.mock("../../src/skills/runtime/remote.js", () => ({
   getRemoteSkillEligibility: vi.fn(() => ({ note: "test-remote" })),
 }));
 
+// mock-isolation: Observe snapshot forwarding without materializing private library skills or writing skill files.
 vi.mock("../../src/skills/loading/workspace-skill-sync.runtime.js", () => ({
   syncWorkspaceSkills: syncSkillsToWorkspaceMock,
 }));
