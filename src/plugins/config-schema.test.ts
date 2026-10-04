@@ -38,7 +38,9 @@ describe("buildPluginConfigSchema", () => {
 
   it("preserves constrained record keys in exported schemas", () => {
     const result = buildPluginConfigSchema(z.record(z.string().regex(/^[a-z]+$/), z.boolean()));
-    expect(result.jsonSchema).toMatchObject({ propertyNames: { type: "string", pattern: "^[a-z]+$" } });
+    expect(result.jsonSchema).toMatchObject({
+      propertyNames: { type: "string", pattern: "^[a-z]+$" },
+    });
     if (!result.jsonSchema) {
       throw new Error("expected exported schema");
     }

@@ -7,19 +7,15 @@ import { resolveConfig, resolveMxcAgentConfig } from "../../extensions/mxc/src/c
 import { createMxcSandboxBackendFactory } from "../../extensions/mxc/src/mxc-backend-factory.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
-import type { AgentSandboxConfig } from "../config/types.agents-shared.js";
 import * as localWorkspaceProjection from "../gateway/worker-environments/local-workspace-projection.js";
 import type { LocalWorkspaceOwner } from "../gateway/worker-environments/local-workspace-types.js";
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
 import type { SkillSnapshot } from "../skills/types.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
-import {
-  registerSandboxBackend,
-  type CreateSandboxBackendParams,
-  type SandboxBackendHandle,
-} from "./sandbox/backend.js";
+import { registerSandboxBackend, type CreateSandboxBackendParams } from "./sandbox/backend.js";
 import { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "./sandbox/context.js";
 import { isSandboxProvisioningError } from "./sandbox/provisioning-error.js";
+import { createBackend, sandboxConfig } from "./test-helpers/sandbox-backend-fixtures.js";
 
 const updateRegistryMock = vi.hoisted(() => vi.fn());
 const readRegisteredSandboxRuntimeIdsMock = vi.hoisted(() => vi.fn(async () => [] as string[]));
@@ -79,39 +75,6 @@ vi.mock("../skills/runtime/remote.js", () => ({
 vi.mock("../skills/loading/workspace-skill-sync.runtime.js", () => ({
   syncWorkspaceSkills: syncSkillsToWorkspaceMock,
 }));
-
-function createBackend(
-  params: Pick<SandboxBackendHandle, "id" | "runtimeId" | "runtimeLabel"> &
-    Partial<SandboxBackendHandle>,
-): SandboxBackendHandle {
-  return {
-    workdir: "/workspace",
-    buildExecSpec: async () => ({
-      argv: [params.id, "exec"],
-      env: process.env,
-      stdinMode: "pipe-closed",
-    }),
-    runShellCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 0 }),
-    ...params,
-  };
-}
-
-function sandboxConfig(backend: string, overrides: AgentSandboxConfig = {}): OpenClawConfig {
-  return {
-    agents: {
-      defaults: {
-        sandbox: {
-          mode: "all",
-          backend,
-          scope: "session",
-          workspaceAccess: "rw",
-          prune: { idleHours: 0, maxAgeDays: 0 },
-          ...overrides,
-        },
-      },
-    },
-  };
-}
 
 let sandboxFixtureRoot = "";
 let sandboxFixtureCount = 0;
@@ -278,7 +241,10 @@ describe("resolveSandboxContext", () => {
       expect(sandbox?.workspaceDir).not.toBe(workspaceDir);
       expect(await warnLogs.findText("workspaceAccess")).toMatch(/rw.*ro/i);
       expect(backendFactory).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: "main", cfg: expect.objectContaining({ scope: "agent" }) }),
+        expect.objectContaining({
+          agentId: "main",
+          cfg: expect.objectContaining({ scope: "agent" }),
+        }),
       );
     } finally {
       warnLogs.cleanup();
