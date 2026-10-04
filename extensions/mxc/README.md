@@ -101,9 +101,10 @@ Executor location, containment, and debug settings remain plugin-wide.
 Plugin-wide policy settings are **defaults, not mandatory common constraints**.
 An absent agent entry or absent override field inherits the plugin default.
 An explicit `mxcPolicyPaths` array **replaces** the default list, including `[]`;
-it is never unioned with another agent's grants. Selected files still compose
-with the built-in baseline using the restrictive rules below. To apply a common
-file, explicitly include it in every replacement list that needs it.
+it is never unioned with another agent's grants. Selected files augment filesystem
+access and cap timeouts using the policy-file rules below; built-in validation
+and protected-path checks still apply. To apply a common file, explicitly include
+it in every replacement list that needs it.
 
 Per-agent overrides require an updated host that supplies resolved `agentId` to
 the sandbox factory; a nonempty map fails closed on older hosts missing that
@@ -121,6 +122,16 @@ and the selected policy baseline timeout.
 These overrides do not isolate a common writable host workspace or host/elevated
 tools. Extra exec policy paths do not become filesystem-tool read/write mounts;
 the filesystem bridge keeps its existing workspace and protected-skill checks.
+
+## Future per-tool policy integration
+
+Per-agent settings select backend defaults; they do not implement tool or intent
+authorization. A future policy-store integration must resolve and authorize each
+invocation using trusted host context, compose a fresh effective configuration
+before execution, and keep tool-specific results out of the backend handle's
+retained baseline. Missing or unsupported catalog results must not broaden access.
+Catalog requirements are not authorization grants; their composition must preserve
+consumer-owned restrictions rather than assume an implicit SDK policy intersection.
 
 ## Supported
 
