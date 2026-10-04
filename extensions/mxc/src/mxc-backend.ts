@@ -227,11 +227,15 @@ export function createMxcSandboxBackendHandle(params: {
     async runShellCommand(
       cmdParams: SandboxBackendCommandParams,
     ): Promise<SandboxBackendCommandResult> {
-      // Shell commands use a restrictive policy (no network, 30s timeout)
+      // Internal shell helpers cannot widen an explicitly configured execution ceiling.
       const restrictiveConfig: MxcConfig = {
         ...params.config,
         network: "none",
-        timeoutSeconds: 30,
+        timeoutSeconds: Math.min(
+          30,
+          baseline.process.timeoutSeconds,
+          params.config.timeoutSecondsConfigured ? params.config.timeoutSeconds : 30,
+        ),
         timeoutSecondsConfigured: true,
       };
       const effectiveWorkdir = path.resolve(params.workdir);
@@ -282,7 +286,7 @@ export function createMxcSandboxBackendHandle(params: {
             input: execInput,
             maxOutputBytes: { stdout: 10 * 1024 * 1024, stderr: 10 * 1024 * 1024 },
             signal: cmdParams.signal,
-            timeoutMs: 30_000,
+            timeoutMs: restrictiveConfig.timeoutSeconds * 1000,
           });
           if (cmdParams.signal?.aborted) {
             throw cmdParams.signal.reason instanceof Error
@@ -322,8 +326,8 @@ export const mxcSandboxBackendManager: SandboxBackendManager = {
   async describeRuntime() {
     return {
       running: false,
-      actualConfigLabel: "mxc-process",
-      configLabelMatch: true,
+      actualConfigLabel: "mxc-ephemeral (policy not compared)",
+      configLabelMatch: false,
     };
   },
   async removeRuntime() {

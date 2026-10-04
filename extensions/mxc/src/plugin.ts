@@ -1,3 +1,4 @@
+import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerSandboxBackend } from "openclaw/plugin-sdk/sandbox";
 import { resolveMxcBinaryPath } from "./binary-resolver.js";
@@ -12,6 +13,14 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   }
 
   const config = resolveConfig(api.pluginConfig);
+  const agentIds = new Set(listAgentIds(api.config));
+  for (const id of Object.keys(config.agents ?? {})) {
+    if (!agentIds.has(id)) {
+      throw new Error(
+        `Invalid mxc plugin config: unknown agent ID "${id}"; configure the agent first.`,
+      );
+    }
+  }
 
   if (process.platform !== "win32") {
     console.warn(

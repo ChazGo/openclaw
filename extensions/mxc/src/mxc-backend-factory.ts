@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CreateSandboxBackendParams, SandboxBackendHandle } from "openclaw/plugin-sdk/sandbox";
-import type { MxcConfig } from "./config.js";
+import { resolveMxcAgentConfig, type MxcConfig } from "./config.js";
 import { createMxcSandboxBackendHandle } from "./mxc-backend.js";
 
 function sanitizeRuntimeId(value: string): string {
@@ -22,12 +22,13 @@ export function createMxcSandboxBackendFactory(config: MxcConfig) {
   return async function createMxcSandboxBackend(
     params: CreateSandboxBackendParams,
   ): Promise<SandboxBackendHandle> {
+    const agentConfig = resolveMxcAgentConfig(config, params.agentId, params.cfg.scope);
     if ((params.cfg.docker.binds?.length ?? 0) > 0) {
       throw new Error("MXC sandbox backend does not support sandbox.docker.binds.");
     }
     const runtimeId = sanitizeRuntimeId(params.scopeKey);
     return createMxcSandboxBackendHandle({
-      config,
+      config: agentConfig,
       runtimeId,
       workdir: params.workspaceDir,
       agentWorkspaceDir: params.agentWorkspaceDir,
