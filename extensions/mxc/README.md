@@ -65,8 +65,11 @@ help stay in sync with plugin runtime validation.
 
 Set `plugins.entries.mxc.config.agents.<agentId>` to override `network`,
 `timeoutSeconds`, or `mxcPolicyPaths` for one configured agent. Keys must be
-canonical lowercase IDs matching `^[a-z0-9][a-z0-9_-]{0,63}$`; unknown agents,
-unknown fields, invalid values, and relative policy paths are rejected.
+canonical lowercase IDs matching `^[a-z0-9_][a-z0-9_-]{0,63}$`, including
+underscore-prefixed IDs such as `_worker`. Unsafe object keys (`__proto__`,
+`prototype`, and `constructor`), unknown agents, unknown fields, invalid values,
+and relative policy paths are rejected. Roster membership changes hot-reload
+plugins and revalidate these references even when the MXC settings are unchanged.
 Executor location, containment, and debug settings remain plugin-wide.
 
 ```json5

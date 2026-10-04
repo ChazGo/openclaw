@@ -117,7 +117,16 @@ describe("createMxcPluginConfigSchema", () => {
       { agents: "bad" },
       { agents: { analyst: null } },
       { agents: { analyst: [] } },
-      ...["Analyst", "bad.id", "bad id", "", "a".repeat(65)].map((id) => ({
+      ...[
+        "Analyst",
+        "bad.id",
+        "bad id",
+        "",
+        "a".repeat(65),
+        "__proto__",
+        "prototype",
+        "constructor",
+      ].map((id) => ({
         agents: { [id]: {} },
       })),
       ...["debug", "containment", "mxcBinaryPath", "securityLevel", "unknown"].map((key) => ({
@@ -141,6 +150,7 @@ describe("createMxcPluginConfigSchema", () => {
     {},
     { agents: {} },
     { agents: { "a-1_b": {} } },
+    { agents: { _worker: {} } },
     {
       agents: {
         ["a".repeat(64)]: {
@@ -170,6 +180,17 @@ describe("createMxcPluginConfigSchema", () => {
 });
 
 describe("per-agent policy selection", () => {
+  test("accepts underscore-prefixed owners and default inheritance with unrelated overrides", () => {
+    const defaults = { network: "default", timeoutSeconds: 60 };
+    const inherited = resolveConfig({ ...defaults, agents: { analyst: { network: "none" } } });
+    expect(resolveMxcAgentConfig(inherited, "_worker", "agent")).toMatchObject(defaults);
+    const overridden = resolveConfig({ ...defaults, agents: { _worker: { network: "none" } } });
+    expect(resolveMxcAgentConfig(overridden, "_worker", "agent")).toMatchObject({
+      network: "none",
+      timeoutSeconds: 60,
+    });
+  });
+
   test("inherits absent fields and entries, replaces explicit lists including empty lists", () => {
     const config = resolveConfig({
       network: "default",

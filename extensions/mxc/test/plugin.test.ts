@@ -144,6 +144,13 @@ describe("registerMxcPlugin", () => {
     expect(createMxcSandboxBackendFactoryMock).not.toHaveBeenCalled();
   });
 
+  test("accepts canonical underscore-prefixed agents in the configured roster", () => {
+    const { api } = createApi({ agents: { _worker: { network: "none" } } });
+    expect(() =>
+      registerMxcPlugin({ ...api, config: { agents: { entries: { _worker: {} } } } }),
+    ).not.toThrow();
+  });
+
   test("uses implicit main only for an absent roster, never an explicit empty roster", () => {
     const { api } = createApi({ agents: { main: {} } });
     expect(() => registerMxcPlugin({ ...api, config: {} })).not.toThrow();

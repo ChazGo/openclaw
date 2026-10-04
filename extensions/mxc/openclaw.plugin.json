@@ -67,7 +67,7 @@
       },
       "agents": {
         "type": "object",
-        "propertyNames": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "propertyNames": { "type": "string", "pattern": "^(?!__proto__$|prototype$|constructor$)[a-z0-9_][a-z0-9_-]{0,63}$" },
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,

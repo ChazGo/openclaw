@@ -27,7 +27,7 @@ export type MxcConfig = {
 type MxcAgentConfig = Partial<Pick<MxcConfig, "network" | "timeoutSeconds" | "mxcPolicyPaths">>;
 
 // Validate ownership keys, rather than repairing a typo into a different policy owner.
-const CANONICAL_AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const CANONICAL_AGENT_ID = /^(?!__proto__$|prototype$|constructor$)[a-z0-9_][a-z0-9_-]{0,63}$/;
 const ABSOLUTE_POLICY_PATH = /^\s*(?:[a-zA-Z]:[\\/]|[\\/])/;
 
 const DEFAULT_CONTAINMENT: MxcContainment = "process";
@@ -104,13 +104,28 @@ const MxcPluginConfigSchema = MxcDefaultConfigSchema.extend({
     .optional(),
 });
 
+// Zod records discard __proto__ before validating keys; reject it on the raw input.
+// Keep JSON Schema export on the declarative schema above, which rejects it by pattern.
+const MxcRuntimeConfigSchema = z.preprocess((value, ctx) => {
+  const agents = value && typeof value === "object" && "agents" in value ? value.agents : undefined;
+  if (agents && typeof agents === "object" && Object.hasOwn(agents, "__proto__")) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["agents", "__proto__"],
+      message: "agents keys must be safe canonical agent IDs",
+    });
+    return z.NEVER;
+  }
+  return value;
+}, MxcPluginConfigSchema);
+
 export function createMxcPluginConfigSchema(): OpenClawPluginConfigSchema {
   return buildPluginConfigSchema(MxcPluginConfigSchema, {
     safeParse(value) {
       if (value === undefined) {
         return { success: true, data: undefined };
       }
-      const parsed = MxcPluginConfigSchema.safeParse(value);
+      const parsed = MxcRuntimeConfigSchema.safeParse(value);
       if (parsed.success) {
         return { success: true, data: parsed.data };
       }
@@ -135,7 +150,7 @@ export function resolveConfig(value: unknown): MxcConfig {
     };
   }
 
-  const parsed = MxcPluginConfigSchema.safeParse(value);
+  const parsed = MxcRuntimeConfigSchema.safeParse(value);
   if (!parsed.success) {
     const message = formatPluginConfigIssue(parsed.error.issues[0]);
     throw new Error(`Invalid mxc plugin config: ${message}`);
