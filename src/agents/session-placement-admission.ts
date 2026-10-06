@@ -47,8 +47,15 @@ type SessionPlacementSandboxParams = {
   workspaceDir: string;
 };
 
+export type PreparedSessionPlacementSandbox = Disposable & {
+  sandbox: SandboxContext | null;
+  assertCurrent: () => void;
+};
+
 export type SessionPlacementAdmissionProvider = {
-  resolveRuntimeOverride?: (identity: Omit<LocalTurnPlacementClaim, "runId">) => string | undefined;
+  resolveRuntimeOverride?: (
+    identity: Omit<LocalTurnPlacementClaim, "runId">,
+  ) => Promise<string | undefined>;
   assertCompactionSuccessorAllowed: (params: {
     currentTarget: SessionTranscriptRuntimeTarget;
     successorSessionId: string;
@@ -72,7 +79,9 @@ export type SessionPlacementAdmissionProvider = {
 };
 
 type PlacementSandboxAdmissionProvider = SessionPlacementAdmissionProvider & {
-  resolveSandbox?: (params: SessionPlacementSandboxParams) => Promise<SandboxContext | null>;
+  prepareSandbox?: (
+    params: SessionPlacementSandboxParams,
+  ) => Promise<PreparedSessionPlacementSandbox>;
 };
 
 type SessionPlacementAdmissionState = {
@@ -97,10 +106,15 @@ export function installSessionPlacementAdmissionProvider(
 }
 
 /** Carries placement-owned runtime selection into candidate preparation and execution. */
-export function resolveSessionPlacementRuntimeOverride(
+export async function resolveSessionPlacementRuntimeOverride(
   identity: Omit<LocalTurnPlacementClaim, "runId">,
-): string | undefined {
-  return state.provider?.resolveRuntimeOverride?.(identity);
+): Promise<string | undefined> {
+  const provider = state.provider;
+  const runtime = await provider?.resolveRuntimeOverride?.(identity);
+  if (state.provider !== provider) {
+    throw createAbortError("session placement owner changed during runtime selection");
+  }
+  return runtime;
 }
 
 /** Captures the exact placement owner, including standalone absence, before awaited work. */
@@ -308,11 +322,33 @@ export async function withLocalSessionPlacementTurnSettlement(
   }
 }
 
-/** Resolves an authoritative sandbox only when the live placement owns remote execution. */
-export async function resolveSessionPlacementSandbox(
+/** Retains the selected placement owner, including absence, until its consumer settles. */
+export async function prepareSessionPlacementSandbox(
   params: SessionPlacementSandboxParams,
-): Promise<SandboxContext | null> {
-  return (await state.provider?.resolveSandbox?.(params)) ?? null;
+): Promise<PreparedSessionPlacementSandbox> {
+  const provider = state.provider;
+  const prepared = await provider?.prepareSandbox?.(params);
+  let released = false;
+  const assertCurrent = () => {
+    if (released || state.provider !== provider) {
+      throw createAbortError("session placement owner changed during sandbox use");
+    }
+    prepared?.assertCurrent();
+  };
+  try {
+    assertCurrent();
+    return {
+      sandbox: prepared?.sandbox ?? null,
+      assertCurrent,
+      [Symbol.dispose]() {
+        released = true;
+        prepared?.[Symbol.dispose]();
+      },
+    };
+  } catch (error) {
+    prepared?.[Symbol.dispose]();
+    throw error;
+  }
 }
 
 /** The current placement owner alone can settle a proven terminal worker turn. */

@@ -84,6 +84,43 @@ type CacheEntry = {
 
 const branchCache = createRetainedCache<CacheEntry>();
 
+function branchCacheKey(
+  context: GitCheckoutContext,
+  read: Pick<
+    ReturnType<typeof prepareSessionPullRequestGitHubRead>,
+    "host" | "apiBaseUrl" | "cacheScope"
+  >,
+  sessionIdentity: string,
+): string {
+  return JSON.stringify([
+    read.host,
+    read.apiBaseUrl,
+    context.owner.toLowerCase(),
+    context.repo.toLowerCase(),
+    context.branch,
+    sessionIdentity,
+    read.cacheScope,
+  ]);
+}
+
+/** Historical landing facts remain scoped to the current session, source, and credential. */
+export function readKnownSessionBranchMergedHeads(
+  context: GitCheckoutContext,
+  read: ControlUiSessionPrReadContext,
+): readonly MergedPullHead[] {
+  read.assertCurrent();
+  const access = prepareSessionPullRequestGitHubRead(
+    context.host ?? "github.com",
+    fetch,
+    read.assertCurrent,
+  );
+  const entry = branchCache.get(
+    branchCacheKey(context, access, JSON.stringify([read.target.identity, read.sourceIdentity])),
+  );
+  access.assertCurrent();
+  return structuredClone(entry?.lastGood?.mergedHeads ?? []);
+}
+
 type LoadSessionPullRequestDeps = {
   read: ControlUiSessionPrReadContext;
   cacheSignal?: AbortSignal;
@@ -107,6 +144,7 @@ async function resolveSessionBranch(
   context: GitCheckoutContext,
   mergedHeads: readonly MergedPullHead[],
   refresh: boolean,
+  refreshIndex: boolean,
 ): Promise<ControlUiSessionBranch | undefined> {
   if (!context.branch || context.branch === context.defaultBranch) {
     return undefined;
@@ -125,7 +163,13 @@ async function resolveSessionBranch(
   const facts = await runGitReadOperation(
     {
       type: "pull-request.branch-facts",
-      input: { root, branch: context.branch, defaultBranch: context.defaultBranch, mergedHeads },
+      input: {
+        root,
+        branch: context.branch,
+        defaultBranch: context.defaultBranch,
+        mergedHeads,
+        refreshIndex,
+      },
     },
     { refresh },
   );
@@ -475,7 +519,12 @@ export async function loadControlUiSessionPullRequests(
     const branch =
       projection === "publication" || workingBranchHasLivePullRequest
         ? undefined
-        : await resolveSessionBranch(context, mergedHeads, request.refresh === true);
+        : await resolveSessionBranch(
+            context,
+            mergedHeads,
+            request.refresh === true,
+            target.refreshIndex === true,
+          );
     assertCurrent();
     return {
       ...snapshot,
@@ -524,18 +573,9 @@ async function cachedBranchPullRequests(
     branchCache.release(deps.cacheSignal);
     throw error;
   }
-  const { cacheScope } = read;
   // Keep proven branch state and quota backoff scoped to this session/source
   // generation, independently of other sessions using the same branch.
-  const key = JSON.stringify([
-    read.host,
-    read.apiBaseUrl,
-    context.owner.toLowerCase(),
-    context.repo.toLowerCase(),
-    context.branch,
-    sessionIdentity,
-    cacheScope,
-  ]);
+  const key = branchCacheKey(context, read, sessionIdentity);
   const cached = branchCache.get(key, deps.cacheSignal);
   const entry: CacheEntry = cached ?? {
     access: createGitHubReadGroup(),
