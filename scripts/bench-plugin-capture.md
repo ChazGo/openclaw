@@ -73,9 +73,11 @@ printed; delete the root when finished. `--timeout-ms` (default 600000) bounds e
 start.
 
 Some Windows hosts stamp a file's NTFS ctime on its first read (on-access scanning),
-which can make admission reject freshly captured files. `--warm-read` reads every file
-under the isolated state root before each start (`warmReadMs`, not included in the
-start's timings) as a control; compare it with an unwarmed run on the same host.
+which makes native admission reject freshly captured files ("Native plugin companion
+changed before admission completed"). `--warm-read` reads every file under the isolated
+state root before each start (`warmReadMs`, not included in the start's timings). It
+settles installed and retained files only: capture copies the Gateway creates during the
+start can still be stamped, so it is a diagnostic, not a way around that rejection.
 
 The JSON's `pluginRoot` is the installed package directory for the capture harness.
 
