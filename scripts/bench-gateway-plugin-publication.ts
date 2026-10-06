@@ -137,9 +137,9 @@ function hideBundled(checkout: string, pluginId: string): string[] {
   return moves.map((move) => path.relative(checkout, move.from));
 }
 
-// Optional control: some Windows hosts stamp a file's ctime on its first read (on-access
-// scanning). Reading every installed file once before a start isolates capture cost from
-// that stamping; it is not part of the measured start.
+// Diagnostic: some Windows hosts stamp a file's ctime on its first read (on-access
+// scanning). Reading installed files before a start settles them, but not the capture
+// copies the Gateway creates during the start. Not part of the measured start.
 function warmRead(directory: string): number {
   const startedAt = performance.now();
   const pending = [directory];
