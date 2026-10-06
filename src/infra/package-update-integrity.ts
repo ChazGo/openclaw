@@ -5,6 +5,7 @@ import path from "node:path";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
 import { hasErrnoCode } from "./errors.js";
+import { LOCAL_TRUSTED_INSTALL } from "./local-trusted-install.js";
 import { readPackageVersion } from "./package-json.js";
 import * as fileHashing from "./package-update-integrity-hasher.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "./update-run-timeouts.js";
@@ -159,7 +160,8 @@ function unchanged(left: BigIntStats, right: BigIntStats): boolean {
     left.nlink === right.nlink &&
     left.size === right.size &&
     left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
+    // Trusted installs tolerate observers that stamp ctime on read (Endpoint DLP).
+    (LOCAL_TRUSTED_INSTALL || left.ctimeNs === right.ctimeNs)
   );
 }
 
@@ -451,6 +453,13 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
           throw new PackageIntegrityLimitError("byte");
         }
         bytes += Number(stat.size);
+        if (LOCAL_TRUSTED_INSTALL) {
+          // Trusted installs fingerprint files by stat identity only; no file is opened.
+          fields.set("statOnly", "file");
+          retained.push("file");
+          settled({ relative, fields, retained, reusable: false });
+          return;
+        }
         const previous = prior?.get(relative);
         const previousDigest = previous?.fields.get("sha256");
         if (
@@ -624,7 +633,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     }
     // New inodes and timestamps are expected; bytes, links, permissions and
     // ownership must survive before the copy can become rollback custody.
-    const fields = ["mode", "uid", "gid", "sha256", "target"];
+    const fields = ["mode", "uid", "gid", "sha256", "statOnly", "target"];
     const matches =
       before.size === after.size &&
       [...before].every(([name, entry]) => {
@@ -632,7 +641,8 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
         return (
           actual &&
           fields.every((field) => entry.fields.get(field) === actual.fields.get(field)) &&
-          (!entry.fields.has("sha256") || entry.fields.get("size") === actual.fields.get("size"))
+          (!(entry.fields.has("sha256") || entry.fields.has("statOnly")) ||
+            entry.fields.get("size") === actual.fields.get("size"))
         );
       });
     if (!matches || source.version !== copied.version) {

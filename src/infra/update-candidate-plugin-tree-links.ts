@@ -4,6 +4,7 @@ import path from "node:path";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
+import { LOCAL_TRUSTED_INSTALL } from "./local-trusted-install.js";
 import { hasNodeErrorCode, isPathInside } from "./path-guards.js";
 import {
   captureUpdateCandidatePluginCodeLink,
@@ -37,8 +38,11 @@ export function assertUpdateCandidatePluginEntryStat(
   if (!sameKind || !sameIdentity || !sameMode) {
     throw new Error(`Plugin entry changed after snapshot inventory: ${entry.path}`);
   }
+  // Trusted installs keep kind, inode and mode checks but skip the timestamp fingerprint,
+  // which Endpoint DLP invalidates by stamping ctime on first read.
   const sameFile =
     entry.kind !== "file" ||
+    LOCAL_TRUSTED_INSTALL ||
     sameFileMutationFingerprint(current, {
       dev: BigInt(entry.dev),
       ino: BigInt(entry.ino),
