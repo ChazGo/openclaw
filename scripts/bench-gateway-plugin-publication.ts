@@ -158,19 +158,22 @@ function warmRead(directory: string): number {
 
 // The id has to be known before install: with the bundled copy visible, install's
 // post-load rejects the installed package as lacking authoritative owner metadata.
+// A packed install has no source extensions/, so the built bundled trees are read too.
 function bundledPluginIdForPackage(checkout: string, packageName: string): string | undefined {
-  const extensions = path.join(checkout, "extensions");
-  if (!fs.existsSync(extensions)) {
-    return undefined;
-  }
-  for (const entry of fs.readdirSync(extensions, { withFileTypes: true })) {
-    const packageJson = path.join(extensions, entry.name, "package.json");
-    if (!entry.isDirectory() || !fs.existsSync(packageJson)) {
+  for (const tree of ["extensions", "dist/extensions", "dist-runtime/extensions"]) {
+    const extensions = path.join(checkout, tree);
+    if (!fs.existsSync(extensions)) {
       continue;
     }
-    const name = (JSON.parse(fs.readFileSync(packageJson, "utf8")) as { name?: unknown }).name;
-    if (name === packageName) {
-      return readPluginId(path.join(extensions, entry.name), entry.name);
+    for (const entry of fs.readdirSync(extensions, { withFileTypes: true })) {
+      const packageJson = path.join(extensions, entry.name, "package.json");
+      if (!entry.isDirectory() || !fs.existsSync(packageJson)) {
+        continue;
+      }
+      const name = (JSON.parse(fs.readFileSync(packageJson, "utf8")) as { name?: unknown }).name;
+      if (name === packageName) {
+        return readPluginId(path.join(extensions, entry.name), entry.name);
+      }
     }
   }
   return undefined;
