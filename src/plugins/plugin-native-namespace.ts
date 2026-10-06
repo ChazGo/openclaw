@@ -224,6 +224,26 @@ export function pluginNativeNamespaceIsCurrent(
   );
 }
 
+// Windows on-access scanners can stamp a file's ctime on its first read, and copying a
+// fresh source is that read. Directory membership is already compared entry by entry; a
+// file is accepted only when its copy holds the same bytes as the source, read after the
+// stamp, and the source identity is settled.
+function copiedSourceOnlyStamped(
+  member: NamespaceMember,
+  copy: string,
+  capturedRoot: string,
+): boolean {
+  if (member.stat.isDirectory()) {
+    return true;
+  }
+  return (
+    fs.statSync(copy, { throwIfNoEntry: false })?.isFile() === true &&
+    hashPluginSourceFile(member.source, member.boundary).contentHash ===
+      hashPluginSourceFile(copy, capturedRoot).contentHash &&
+    pluginSourceStatIdentity(fs.statSync(member.source, { bigint: true })) === member.identity
+  );
+}
+
 /** A retained namespace is complete before exposing any native pathname from it. */
 export function capturePluginNativeNamespace(params: {
   sourceDirectory: string;
@@ -327,8 +347,16 @@ export function capturePluginNativeNamespace(params: {
     const stat = pluginSourceStatIdentity(fs.statSync(filename, { bigint: true }));
     const digest = hashPluginSourceFile(filename, capturedRoot);
     const prior = previous?.members[relative];
+    const restat = pluginSourceStatIdentity(fs.statSync(filename, { bigint: true }));
     if (
-      stat !== pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) ||
+      (stat !== restat &&
+        !(
+          // The hash is this file's first read, which on-access scanners can stamp. The
+          // retained bytes still have to match the receipt, and the identity must settle.
+          prior?.contentHash !== undefined &&
+          pluginSourceIdentityChangedOnlyByCtime(stat, restat) &&
+          pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) === restat
+        )) ||
       (prior && (digest.contentHash !== prior.contentHash || digest.sizeBytes !== prior.sizeBytes))
     ) {
       throw new Error("Native plugin companion changed during admission");
@@ -341,26 +369,29 @@ export function capturePluginNativeNamespace(params: {
     previous ? undefined : outputRoot,
     !previous || Boolean(previous.referenceRoot),
   );
-  const captured = inspectDirectory(
-    referenceRoot ? sourceDirectory : directory,
-    referenceRoot ?? capturedRoot,
-    referenceRoot ? outputRoot : undefined,
-    Boolean(referenceRoot),
-  );
   if (
     before.size !== after.size ||
-    captured.size !== before.size ||
     [...before].some(([relative, member]) => {
       const current = after.get(relative);
       return (
         !current ||
         current.source !== member.source ||
         (current.identity !== member.identity &&
-          (!(managed || previous) ||
-            !pluginSourceIdentityChangedOnlyByCtime(member.identity, current.identity)))
+          (!pluginSourceIdentityChangedOnlyByCtime(member.identity, current.identity) ||
+            (!(managed || previous) &&
+              !copiedSourceOnlyStamped(current, path.join(directory, relative), capturedRoot))))
       );
     })
   ) {
+    throw new Error("Native plugin directory changed during admission");
+  }
+  const captured = inspectDirectory(
+    referenceRoot ? sourceDirectory : directory,
+    referenceRoot ?? capturedRoot,
+    referenceRoot ? outputRoot : undefined,
+    Boolean(referenceRoot),
+  );
+  if (captured.size !== before.size) {
     throw new Error("Native plugin directory changed during admission");
   }
   const changed = new Map<string, string>();
