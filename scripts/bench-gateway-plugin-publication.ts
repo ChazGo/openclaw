@@ -40,6 +40,11 @@ type Start = {
   index: number;
   readyMs: number | null;
   readyzMs: number | null;
+  reachedReady: boolean;
+  listeningMs: number | null;
+  // The Gateway's own elapsed time on its "http server listening (...; Ns)" line.
+  listeningReportedMs: number | null;
+  listeningLine: string | null;
   modelRuntimeMs: number | null;
   modelRuntimeTotalMs: number | null;
   buildStatsAtMs: number | null;
@@ -265,6 +270,9 @@ async function startGateway(params: {
     : undefined;
   let readyMs: number | null = null;
   let readyzMs: number | null = null;
+  let listeningMs: number | null = null;
+  let listeningReportedMs: number | null = null;
+  let listeningLine: string | null = null;
   let modelRuntimeSeen = false;
   let buildStatsAtMs: number | null = null;
   let publicationFailed = false;
@@ -288,8 +296,15 @@ async function startGateway(params: {
       ) {
         buildStatsAtMs = performance.now() - startedAt;
       }
-      if (readyMs === null && classifyGatewayReadyLog(line) === "gateway-ready") {
+      const readyKind = classifyGatewayReadyLog(line);
+      if (readyMs === null && readyKind === "gateway-ready") {
         readyMs = performance.now() - startedAt;
+      }
+      if (listeningMs === null && readyKind === "http-listen") {
+        listeningMs = performance.now() - startedAt;
+        listeningLine = line.trim();
+        const reported = /;\s*([\d.]+)s\)\s*$/u.exec(line)?.[1];
+        listeningReportedMs = reported ? Number(reported) * 1000 : null;
       }
       if (OUTCOME_PATTERNS.some((pattern) => pattern.test(line))) {
         outcomeLines.push(`${((performance.now() - startedAt) / 1000).toFixed(1)}s ${line.trim()}`);
@@ -318,8 +333,12 @@ async function startGateway(params: {
     if (readyzMs === null && (await requestProbeStatus(port, "/readyz")).status === 200) {
       readyzMs = performance.now() - startedAt;
     }
-    // Degraded startups keep publishing in the background; wait for its build result.
-    if (modelRuntimeSeen && (buildStatsAtMs !== null || publicationFailed)) {
+    // Degraded startups keep publishing in the background; wait for its build result and,
+    // unless publication failed, for the Gateway to report ready (time-to-ready is the user number).
+    if (
+      modelRuntimeSeen &&
+      (publicationFailed || (buildStatsAtMs !== null && (readyMs !== null || readyzMs !== null)))
+    ) {
       break;
     }
     await delay(250);
@@ -331,6 +350,7 @@ async function startGateway(params: {
     log.end(resolve);
   });
   const modelRuntimeMs = trace["sidecars.model-runtime"] ?? null;
+  const reachedReady = readyMs !== null || readyzMs !== null;
   const pluginTrace = params.pluginId
     ? `plugins.gateway-load.plugin.${params.pluginId}.`
     : undefined;
@@ -349,13 +369,20 @@ async function startGateway(params: {
     index: params.index,
     readyMs,
     readyzMs,
+    reachedReady,
+    listeningMs,
+    listeningReportedMs,
+    listeningLine,
     modelRuntimeMs,
     modelRuntimeTotalMs: trace["sidecars.model-runtime.total"] ?? null,
     buildStatsAtMs,
     withinBudget:
       modelRuntimeMs === null
         ? null
-        : modelRuntimeMs < PUBLICATION_BUDGET_MS && !outcomeLines.length && pluginLoaded !== false,
+        : modelRuntimeMs < PUBLICATION_BUDGET_MS &&
+          !outcomeLines.length &&
+          pluginLoaded !== false &&
+          reachedReady,
     outcomeLines,
     pluginLoaded,
     pluginLoadMs,
@@ -452,7 +479,8 @@ async function main() {
         `[${options.label}] start ${index + 1}/${options.starts}: model-runtime ` +
           `${start.modelRuntimeMs === null ? "n/a" : `${(start.modelRuntimeMs / 1000).toFixed(1)}s`} ` +
           `(budget ${PUBLICATION_BUDGET_MS / 1000}s, ${start.withinBudget ? "within" : "NOT within"}), ` +
-          `ready ${start.readyMs === null ? "n/a" : `${(start.readyMs / 1000).toFixed(1)}s`}` +
+          `listening ${start.listeningReportedMs === null ? "n/a" : `${(start.listeningReportedMs / 1000).toFixed(1)}s`}, ` +
+          `ready ${start.readyMs === null ? (start.readyzMs === null ? "NEVER" : `${(start.readyzMs / 1000).toFixed(1)}s (readyz)`) : `${(start.readyMs / 1000).toFixed(1)}s`}` +
           (pluginId ? `, ${pluginId} ${start.pluginLoaded ? "loaded" : "NOT loaded"}` : "") +
           (start.outcomeLines.length ? `; ${start.outcomeLines[0]}` : "") +
           (start.pluginFailureLines.length ? `; ${start.pluginFailureLines[0]}` : ""),

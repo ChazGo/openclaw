@@ -40,6 +40,11 @@ state root, then starts the Gateway `--starts` times on that state. Start 1 is t
 start after install. It reports `modelRuntimeMs` (the `sidecars.model-runtime` startup
 trace phase), `buildStatsAtMs` (when the publication build reported its stats), any
 publication timeout, degraded-startup, or `startup_failed` lines, and `withinBudget`.
+Each start then waits for the Gateway to report ready (`[gateway] ready` or `/readyz`
+200) within `--timeout-ms` and records time to ready: `readyMs`, `readyzMs`,
+`listeningMs`, and `listeningReportedMs` (the Gateway's own elapsed time from its
+`http server listening (...; Ns)` line, whose plugin list is kept in `listeningLine`).
+A start that never reaches ready has `reachedReady: false` and is not `withinBudget`.
 
 A fast `modelRuntimeMs` is not a pass on its own: a plugin rejected during capture or
 admission leaves publication fast and empty. With a plugin installed, each start also
