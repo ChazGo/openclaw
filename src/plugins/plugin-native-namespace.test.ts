@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   capturePluginNativeNamespace,
@@ -14,7 +14,25 @@ const temp = useAutoCleanupTempDirTracker(afterEach);
 // Stands in for an identity recorded before an on-access scanner stamped the copy's ctime.
 const withEarlierCtime = (identity: string) => `${identity.slice(0, identity.lastIndexOf(":"))}:1`;
 
-function captureNamespace() {
+// Changing the link count moves ctime and nothing else, as a first-read scan stamp does.
+// The link lives outside the namespace so no directory membership changes.
+function stampCtime(filename: string, linkDirectory: string) {
+  const before = pluginSourceStatIdentity(fs.statSync(filename, { bigint: true }));
+  const link = path.join(linkDirectory, "stamp-link");
+  for (let attempt = 0; attempt < 100_000; attempt++) {
+    fs.linkSync(filename, link);
+    fs.unlinkSync(link);
+    if (pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) !== before) {
+      return;
+    }
+  }
+  throw new Error(`ctime of ${filename} did not advance`);
+}
+
+// Runs `duringCopy` right after the addon's copy is written, inside the capture pass.
+function captureNamespace(
+  duringCopy?: (paths: { source: string; copy: string; root: string }) => void,
+) {
   const root = fs.realpathSync(temp.make("plugin-native-namespace-"));
   const source = path.join(root, "native");
   const capturedRoot = path.join(root, "captured");
@@ -22,12 +40,24 @@ function captureNamespace() {
   fs.mkdirSync(capturedRoot);
   fs.writeFileSync(path.join(source, "package.json"), '{"name":"native-fixture"}');
   fs.writeFileSync(path.join(source, "addon.node"), "native bytes");
-  const { fact } = capturePluginNativeNamespace({
-    sourceDirectory: source,
-    boundary: source,
-    capturedRoot,
-    managed: false,
+  const chmod = fs.chmodSync;
+  const spy = vi.spyOn(fs, "chmodSync").mockImplementation((filename, mode) => {
+    chmod(filename, mode);
+    if (duringCopy && path.basename(String(filename)) === "addon.node") {
+      duringCopy({ source: path.join(source, "addon.node"), copy: String(filename), root });
+    }
   });
+  let fact: ReturnType<typeof capturePluginNativeNamespace>["fact"];
+  try {
+    ({ fact } = capturePluginNativeNamespace({
+      sourceDirectory: source,
+      boundary: source,
+      capturedRoot,
+      managed: false,
+    }));
+  } finally {
+    spy.mockRestore();
+  }
   const member = fact.members["addon.node"]!;
   return { fact, member, copy: pluginNativeNamespaceMemberPath(fact, "addon.node") };
 }
@@ -64,4 +94,35 @@ it("rejects a captured companion whose mtime changed", () => {
   expect(() => finishPluginNativeNamespace(fact)).toThrow(
     "Native plugin companion changed before admission completed",
   );
+});
+
+it("admits a copied companion whose source ctime alone changed during the copy", () => {
+  let stamped = "";
+  const { fact, member } = captureNamespace(({ source, root }) => {
+    stampCtime(source, root);
+    stamped = pluginSourceStatIdentity(fs.statSync(source, { bigint: true }));
+  });
+
+  expect(member.sourceIdentity).toBe(stamped);
+  finishPluginNativeNamespace(fact);
+  expect(member.contentHash).toBe(
+    hashPluginSourceFile(member.source, fact.sourceDirectory).contentHash,
+  );
+});
+
+it("rejects a ctime-only source change when the copy does not hold the source bytes", () => {
+  expect(() =>
+    captureNamespace(({ source, copy, root }) => {
+      fs.writeFileSync(copy, "forged bytes");
+      stampCtime(source, root);
+    }),
+  ).toThrow("Native plugin directory changed during admission");
+});
+
+it("rejects a source whose mtime changed during the copy", () => {
+  expect(() =>
+    captureNamespace(({ source }) => {
+      fs.utimesSync(source, 1_000, 1_000);
+    }),
+  ).toThrow("Native plugin directory changed during admission");
 });
