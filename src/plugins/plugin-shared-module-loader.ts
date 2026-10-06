@@ -24,16 +24,21 @@ export function bindSharedPluginModuleLoader(params: {
   rootDir: string;
   cache: PluginCache;
   loader: PluginModuleLoader;
+  /** False skips the content walk; reloads then always warn that edits need a restart. */
+  fingerprint?: boolean;
 }): void {
   const { instance, cache, loader } = params;
   const root = safeRealpathSync(params.rootDir) ?? path.resolve(params.rootDir);
   let currentIdentity: string | undefined;
   try {
-    currentIdentity = fingerprintPluginRuntimeArtifact({
-      pluginId: instance.pluginId,
-      origin: "bundled",
-      rootDir: root,
-    });
+    currentIdentity =
+      params.fingerprint === false
+        ? undefined
+        : fingerprintPluginRuntimeArtifact({
+            pluginId: instance.pluginId,
+            origin: "bundled",
+            rootDir: root,
+          });
   } catch (error) {
     // Observability must not prevent an otherwise valid plugin from starting.
     log.warn(

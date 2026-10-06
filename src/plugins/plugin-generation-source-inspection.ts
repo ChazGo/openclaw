@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { moduleResolve } from "import-meta-resolve";
 import { walkDirectorySync } from "../infra/fs-safe.js";
+import { LOCAL_TRUSTED_INSTALL } from "../infra/local-trusted-install.js";
 import { hasNodeErrorCode, isPathInside } from "../infra/path-guards.js";
 import { createJiti } from "./jiti-factory.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
@@ -148,6 +149,10 @@ export function inspectPluginSourceDependencies(
 export function inspectPluginGenerationSources(
   entries: readonly { pluginId: string; rootDir: string; entryFile?: string }[],
 ) {
+  if (LOCAL_TRUSTED_INSTALL) {
+    // In-place loading records no source digest, so there is nothing to expect or compare.
+    return { sourceDigests: {}, assertSourceCurrent: () => {} };
+  }
   const bySource = new Map<string, string>();
   const digests = new Map<string, string>();
   const checks: Array<() => void> = [];

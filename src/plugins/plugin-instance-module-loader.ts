@@ -3,6 +3,7 @@ import Module, { createRequire, isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { JitiOptions, JitiResolveOptions } from "jiti";
+import { LOCAL_TRUSTED_INSTALL } from "../infra/local-trusted-install.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { createJiti } from "./jiti-factory.js";
 import {
@@ -34,8 +35,9 @@ import { preparePluginLoaderAliases, isPluginSdkAliasSpecifier } from "./sdk-ali
 /** Runtime and setup share code identity policy while keeping separate instance authority. */
 export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoaderParams): void {
   const cache = getPluginCache();
-  if (params.origin === "bundled") {
-    if (params.expectedSourceDigest !== undefined) {
+  // Local trusted-install builds load every plugin in place, like core-bundled code.
+  if (params.origin === "bundled" || LOCAL_TRUSTED_INSTALL) {
+    if (params.origin === "bundled" && params.expectedSourceDigest !== undefined) {
       throw new Error("Source digest validation is not applicable to core-bundled runtime modules");
     }
     // Recaptured bundled code leaves native ESM jobs alive after its inventory retires.
@@ -61,6 +63,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       rootDir: params.rootDir,
       cache,
       loader,
+      fingerprint: params.origin === "bundled",
     });
     return;
   }

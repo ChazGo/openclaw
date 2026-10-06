@@ -76,6 +76,11 @@ const workerDeployVersion = (
 ).version;
 const OUTPUT_SOURCE_MAPS = process.env.OUTPUT_SOURCE_MAPS === "1";
 const RUN_NODE_SKIP_DTS_BUILD = process.env.OPENCLAW_RUN_NODE_SKIP_DTS_BUILD === "1";
+// Local trusted-install builds only; see src/infra/local-trusted-install.ts for the trade-off.
+const LOCAL_TRUSTED_INSTALL_DEFINE = {
+  OPENCLAW_LOCAL_TRUSTED_INSTALL:
+    process.env.OPENCLAW_LOCAL_TRUSTED_INSTALL === "1" ? "true" : "false",
+};
 const TSDOWN_DECLARATIONS = !RUN_NODE_SKIP_DTS_BUILD;
 export { createStateSchemaInlinePlugin, STATE_SCHEMA_INLINE_PLUGIN_NAME };
 
@@ -230,7 +235,7 @@ function nodeBuildConfig(
       config.plugins,
     ],
     env,
-    define: { WORKER_DEPLOY_BUILD: "false", ...config.define },
+    define: { WORKER_DEPLOY_BUILD: "false", ...LOCAL_TRUSTED_INSTALL_DEFINE, ...config.define },
     outExtensions: () => ({ js: ".js", dts: ".d.ts" }),
     fixedExtension: false,
     sourcemap: OUTPUT_SOURCE_MAPS,
@@ -247,6 +252,7 @@ function workerDeployBuildConfig(entry: Record<string, string>, split = false): 
     dts: false,
     env,
     define: {
+      ...LOCAL_TRUSTED_INSTALL_DEFINE,
       WORKER_DEPLOY_BUILD: "true",
       SEALED_RUNTIME_BUILD: "true",
       WORKER_DEPLOY_VERSION: JSON.stringify(workerDeployVersion),
@@ -295,7 +301,7 @@ function workerHelperBuildConfig(
     platform: "node",
     dts: false,
     env,
-    define,
+    define: { ...LOCAL_TRUSTED_INSTALL_DEFINE, ...define },
     deps: {
       alwaysBundle: () => true,
       onlyBundle: false,
