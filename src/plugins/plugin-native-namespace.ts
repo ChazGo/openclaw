@@ -415,6 +415,44 @@ export function capturePluginNativeNamespace(params: {
   return { fact, changed };
 }
 
+// Windows on-access scanners can stamp a fresh file's ctime on its first read, which is
+// this hash. A ctime-only change is accepted for a private copy whose bytes still equal
+// its unchanged source, with the copy's identity stable after both reads.
+function capturedCopyOnlyStamped(
+  fact: PluginNativeNamespaceFact,
+  member: PluginNativeNamespaceFact["members"][string],
+  filename: string,
+  identity: string,
+  contentHash: string,
+): boolean {
+  if (
+    fact.referenceRoot ||
+    !pluginSourceIdentityChangedOnlyByCtime(member.capturedIdentity, identity)
+  ) {
+    return false;
+  }
+  const sourceIdentity = pluginSourceStatIdentity(fs.statSync(member.source, { bigint: true }));
+  if (!pluginSourceIdentityChangedOnlyByCtime(member.sourceIdentity, sourceIdentity)) {
+    return false;
+  }
+  if (sourceIdentity.split(":", 2).join(":") === identity.split(":", 2).join(":")) {
+    // A hard-linked managed member is the source inode, so there is no independent byte
+    // reference; accept exactly what directory inspection already accepts for managed roots.
+    return (
+      fact.managed && pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) === identity
+    );
+  }
+  // member.source is the canonical path admitted at capture, so its directory bounds the open.
+  return (
+    hashPluginSourceFile(member.source, path.dirname(member.source)).contentHash === contentHash &&
+    pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) === identity &&
+    pluginSourceIdentityChangedOnlyByCtime(
+      member.sourceIdentity,
+      pluginSourceStatIdentity(fs.statSync(member.source, { bigint: true })),
+    )
+  );
+}
+
 /** Fill dormant companion digests after the legacy initial receipt has consumed native bytes. */
 export function finishPluginNativeNamespace(fact: PluginNativeNamespaceFact): void {
   for (const [relative, member] of Object.entries(fact.members)) {
@@ -423,12 +461,15 @@ export function finishPluginNativeNamespace(fact: PluginNativeNamespaceFact): vo
     }
     const filename = pluginNativeNamespaceMemberPath(fact, relative);
     const content = hashPluginSourceFile(filename, pluginNativeNamespaceBoundary(fact));
+    const identity = pluginSourceStatIdentity(fs.statSync(filename, { bigint: true }));
     if (
       content.sizeBytes !== member.sizeBytes ||
-      pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) !== member.capturedIdentity
+      (identity !== member.capturedIdentity &&
+        !capturedCopyOnlyStamped(fact, member, filename, identity, content.contentHash))
     ) {
       throw new Error("Native plugin companion changed before admission completed");
     }
+    member.capturedIdentity = identity;
     member.contentHash = content.contentHash;
   }
 }
