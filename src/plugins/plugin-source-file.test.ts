@@ -15,15 +15,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function countRealpathCalls() {
+// Counts OpenClaw's own realpathSync calls. fs-safe's per-open canonicalization is
+// its contract and differs by platform (Windows resolves each opened file once more).
+function countOpenClawRealpathCalls() {
   const realpathSync = fs.realpathSync;
   const native = fs.realpathSync.native;
-  const calls = vi
-    .spyOn(fs, "realpathSync")
-    .mockImplementation((...args) => Reflect.apply(realpathSync, fs, args));
-  // fs-safe canonicalizes opened files through the native resolver.
+  const counter = { calls: 0 };
+  vi.spyOn(fs, "realpathSync").mockImplementation((...args) => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    const stack = new Error().stack ?? "";
+    Error.stackTraceLimit = limit;
+    if (!/[\\/]fs-safe[\\/]/u.test(stack)) {
+      counter.calls += 1;
+    }
+    return Reflect.apply(realpathSync, fs, args);
+  });
   Object.assign(fs.realpathSync, { native });
-  return calls;
+  return counter;
 }
 
 it("resolves the same canonical paths as realpathSync within a capture pass", () => {
@@ -70,11 +79,11 @@ it("canonicalizes package boundaries once per capture pass instead of once per f
     fs.writeFileSync(path.join(source, `module-${index}.js`), `export const value = ${index};`);
   }
 
-  const calls = countRealpathCalls();
+  const counter = countOpenClawRealpathCalls();
   const artifact = withPluginSourceCaptureDirectory(captures, () =>
     capturePluginGenerationArtifact(source, undefined, (run) => run()),
   );
-  const captureCalls = calls.mock.calls.length;
+  const captureCalls = counter.calls;
   try {
     // Source verification keeps one independent canonical check per input; copying,
     // boundary admission, and receipt reopen no longer each walk every ancestor.

@@ -41,6 +41,21 @@ start after install. It reports `modelRuntimeMs` (the `sidecars.model-runtime` s
 trace phase), `buildStatsAtMs` (when the publication build reported its stats), any
 publication timeout, degraded-startup, or `startup_failed` lines, and `withinBudget`.
 
+A fast `modelRuntimeMs` is not a pass on its own: a plugin rejected during capture or
+admission leaves publication fast and empty. With a plugin installed, each start also
+reports `pluginLoaded`, `pluginLoadMs`, and `pluginFailureLines`. `pluginLoaded` requires
+the loader's `plugins.gateway-load.plugin.<id>` trace (load and register timed, zero
+failure counts), a `sidecars.model-runtime` phase, and no capture or admission
+rejection lines (for example "Native plugin companion changed before admission
+completed"). `withinBudget` is false whenever `pluginLoaded` is false.
+
+From a source checkout, a bundled plugin with the same id outranks the installed one.
+The harness moves `dist\extensions\<id>` and `dist-runtime\extensions\<id>` into
+`.bench-hidden-bundled\` for the starts and restores them afterward (including after an
+interrupted run, on the next invocation); the JSON lists them in `hiddenBundled`.
+`--keep-bundled` disables this. The plugin id comes from the installed
+`openclaw.plugin.json`, or `--plugin-id`.
+
 ```powershell
 New-Item -ItemType Directory -Force bench-out | Out-Null
 node --import ./scripts/tsx.mjs scripts/bench-gateway-plugin-publication.ts `
@@ -56,6 +71,11 @@ Extra install flags pass through with `--install-arg <flag>` (repeatable). The s
 root and per-start logs (`logs\gateway-start-N.log`, `logs\install.log`) are kept and
 printed; delete the root when finished. `--timeout-ms` (default 600000) bounds each
 start.
+
+Some Windows hosts stamp a file's NTFS ctime on its first read (on-access scanning),
+which can make admission reject freshly captured files. `--warm-read` reads every file
+under the isolated state root before each start (`warmReadMs`, not included in the
+start's timings) as a control; compare it with an unwarmed run on the same host.
 
 The JSON's `pluginRoot` is the installed package directory for the capture harness.
 
