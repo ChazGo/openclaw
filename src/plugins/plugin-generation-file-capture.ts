@@ -4,7 +4,11 @@ import { isPathInside } from "../infra/path-guards.js";
 import type { createPluginGenerationReceipt } from "./plugin-generation-receipt.js";
 import type { createPluginNativeAdmission } from "./plugin-native-admission.js";
 import type { createPluginSourceCapture } from "./plugin-package-metadata-capture.js";
-import { copyPluginSourceFile } from "./plugin-source-file.js";
+import {
+  copyPluginSourceFile,
+  resolvePluginSourceRealPath,
+  withPluginSourcePathScope,
+} from "./plugin-source-file.js";
 import {
   readPluginSourceDirectory,
   pluginSourceInputIdentity,
@@ -70,7 +74,7 @@ export function createPluginGenerationFileCapture({
     const prepared = nativeAdmission.resolvePreparedSource(source);
     const input = prepared?.path ?? source;
     const inputBoundary = prepared?.boundary ?? boundary;
-    const real = fs.realpathSync(input);
+    const real = resolvePluginSourceRealPath(input);
     const retainedNative = nativeAdmission.isRetainedReference(source, real);
     if (!isPathInside(inputBoundary, real) && !retainedNative) {
       throw new Error(
@@ -178,5 +182,6 @@ export function createPluginGenerationFileCapture({
       throw new Error(`Plugin build input is not a regular file: ${source}`);
     }
   };
-  return copy;
+  // One path scope per top-level copy shares ancestor and boundary canonicalization.
+  return (source: string, target: string) => withPluginSourcePathScope(() => copy(source, target));
 }
