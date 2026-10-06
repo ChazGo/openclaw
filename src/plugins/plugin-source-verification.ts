@@ -7,6 +7,7 @@ import {
   pluginSourceFileIdentity,
   pluginSourceIdentityChangedOnlyByCtime,
   pluginSourceStatIdentity,
+  withPluginSourcePathScope,
 } from "./plugin-source-file.js";
 
 export function readPluginSourceDirectory(source: string) {
@@ -42,32 +43,36 @@ export function verifyPluginSourceInputs(
   inputs: ReadonlyMap<string, PluginSourceInput>,
   sources: Iterable<string>,
 ): void {
-  for (const source of sources) {
-    const input = inputs.get(source)!;
-    const identity = input.native
-      ? pluginSourceFileIdentity(source, input.boundary)
-      : pluginSourceInputIdentity(fs.statSync(source, { bigint: true }));
-    // Retaining native namespaces also hardlinks ordinary companion files.
-    if (
-      !input.directory &&
-      identity !== input.identity &&
-      pluginSourceIdentityChangedOnlyByCtime(input.identity, identity) &&
-      hashPluginSourceFile(source, input.boundary).contentHash === input.contentHash
-    ) {
-      input.identity = identity;
+  // One scope per pass shares boundary canonicalization across root-scoped opens;
+  // each input still gets a fresh realpath below.
+  withPluginSourcePathScope(() => {
+    for (const source of sources) {
+      const input = inputs.get(source)!;
+      const identity = input.native
+        ? pluginSourceFileIdentity(source, input.boundary)
+        : pluginSourceInputIdentity(fs.statSync(source, { bigint: true }));
+      // Retaining native namespaces also hardlinks ordinary companion files.
+      if (
+        !input.directory &&
+        identity !== input.identity &&
+        pluginSourceIdentityChangedOnlyByCtime(input.identity, identity) &&
+        hashPluginSourceFile(source, input.boundary).contentHash === input.contentHash
+      ) {
+        input.identity = identity;
+      }
+      if (
+        fs.realpathSync(source) !== source ||
+        identity !== input.identity ||
+        (input.directory
+          ? readPluginSourceDirectory(source).contentHash
+          : input.native
+            ? input.contentHash
+            : hashPluginSourceFile(source, input.boundary).contentHash) !== input.contentHash
+      ) {
+        throw new Error(
+          "Plugin source changed while preparing its reload; retry after the edit finishes.",
+        );
+      }
     }
-    if (
-      fs.realpathSync(source) !== source ||
-      identity !== input.identity ||
-      (input.directory
-        ? readPluginSourceDirectory(source).contentHash
-        : input.native
-          ? input.contentHash
-          : hashPluginSourceFile(source, input.boundary).contentHash) !== input.contentHash
-    ) {
-      throw new Error(
-        "Plugin source changed while preparing its reload; retry after the edit finishes.",
-      );
-    }
-  }
+  });
 }

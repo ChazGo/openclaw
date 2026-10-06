@@ -36,7 +36,7 @@ import {
   isPluginPackageFile as inPackage,
   findPluginCapturedPackage,
 } from "./plugin-package-metadata-capture.js";
-import { isPluginSourceEntry } from "./plugin-source-file.js";
+import { isPluginSourceEntry, resolvePluginSourceRealPath } from "./plugin-source-file.js";
 import {
   capturedPluginModuleUrl,
   createPluginPackageMapReferences,
@@ -135,7 +135,7 @@ export function capturePluginGenerationArtifact(
           !capturedPaths.has(source) &&
           !packageMap.hasMissingTarget(source) &&
           fs.statSync(source, { throwIfNoEntry: false })?.isFile() &&
-          (isPathInside(boundary, fs.realpathSync(source)) ||
+          (isPathInside(boundary, resolvePluginSourceRealPath(source)) ||
             nativeAdmission.isRetainedReference(source))
         ) {
           // Unselected branches must not initialize Jiti or validate their tsconfig.
@@ -241,7 +241,7 @@ export function capturePluginGenerationArtifact(
       const target = existingSource ?? path.join(destination, path.relative(root, source));
       if (!existingSource) {
         const prepared = nativeAdmission.resolvePreparedSource(source);
-        const real = fs.realpathSync(prepared?.path ?? source);
+        const real = resolvePluginSourceRealPath(prepared?.path ?? source);
         if (
           !isPathInside(prepared?.boundary ?? boundary, real) &&
           !nativeAdmission.isRetainedReference(source, real)
@@ -348,7 +348,7 @@ export function capturePluginGenerationArtifact(
             if (
               inPackage(boundary, input) &&
               (capturedPaths.has(path.resolve(input)) ||
-                inPackage(boundary, fs.realpathSync(input)))
+                inPackage(boundary, resolvePluginSourceRealPath(input)))
             ) {
               captureFile(input, resolver.options);
               return input;
@@ -437,7 +437,7 @@ export function capturePluginGenerationArtifact(
             execute &&
             !capturedInput &&
             !preparedInput &&
-            !isPathInside(boundary, fs.realpathSync(input))
+            !isPathInside(boundary, resolvePluginSourceRealPath(input))
           ) {
             return conditions ? captureExecutableFile(input) : null;
           }

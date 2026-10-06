@@ -14,7 +14,11 @@ import {
   retainPluginSourceCaptureInstance,
 } from "./plugin-source-capture-directory.js";
 import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
-import { isPluginSourceEntry } from "./plugin-source-file.js";
+import {
+  isPluginSourceEntry,
+  resolvePluginSourceRealPath,
+  withPluginSourcePathScope,
+} from "./plugin-source-file.js";
 import { verifyPluginSourceInputs, type PluginSourceInput } from "./plugin-source-verification.js";
 
 export type PluginDependencyResolution = { root: string; lookupDirectory: string };
@@ -219,7 +223,7 @@ export function capturePluginModuleSource(
   filename: string,
   capture: (root: string, source: string) => void,
 ): string | undefined {
-  const real = fs.realpathSync(filename);
+  const real = resolvePluginSourceRealPath(filename);
   if (!fs.statSync(real).isFile()) {
     return undefined;
   }
@@ -264,7 +268,7 @@ export function capturePluginPackageMetadata(
       const prepared = resolveSource?.(filename);
       const input = prepared?.path ?? filename;
       if (isPathInside(root, filename) && fs.statSync(input, { throwIfNoEntry: false })?.isFile()) {
-        const real = fs.realpathSync(input);
+        const real = resolvePluginSourceRealPath(input);
         if (
           !isPathInside(prepared?.boundary ?? root, real) &&
           !isRetainedReference?.(filename, real)
@@ -358,7 +362,7 @@ function visitPluginPackageTargetFiles(params: {
     if (!stat) {
       return;
     }
-    const real = fs.realpathSync(input);
+    const real = resolvePluginSourceRealPath(input);
     if (
       !isPathInside(prepared?.boundary ?? params.boundary, real) &&
       !(stat.isFile() && params.isRetainedReference?.(source, real))
@@ -679,7 +683,7 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
       throw new Error("Plugin module capture has been disposed");
     }
     try {
-      const value = capture();
+      const value = withPluginSourcePathScope(capture);
       verifyPluginSourceInputs(inputs, pendingInputs);
       return { value, additions: [...additions] };
     } catch (error) {

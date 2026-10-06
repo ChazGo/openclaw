@@ -1,8 +1,10 @@
 import { createHash, type Hash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { copyFileDescriptorSync } from "@openclaw/fs-safe/advanced";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
+import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isGitRuntimeStagingName } from "../infra/update-runtime-staging.js";
 
@@ -23,10 +25,84 @@ export const pluginSourceIdentityChangedOnlyByCtime = (
 ): boolean =>
   previous.slice(0, previous.lastIndexOf(":")) === current.slice(0, current.lastIndexOf(":"));
 
+// One synchronous capture or verification pass. Without it, every root-scoped
+// open re-canonicalizes its package boundary from the drive root, and Windows
+// pays a handle open per ancestor lstat for each captured file.
+let pathScope:
+  | { boundaries: Map<string, string | undefined>; directories: Map<string, string> }
+  | undefined;
+
+/** Shares path canonicalization across one synchronous capture or verification pass. */
+export function withPluginSourcePathScope<T>(run: () => T): T {
+  if (pathScope) {
+    return run();
+  }
+  pathScope = { boundaries: new Map(), directories: new Map() };
+  try {
+    return run();
+  } finally {
+    pathScope = undefined;
+  }
+}
+
+// fs-safe computes this same value for each open that lacks `rootRealPath`. Each
+// open still observes the root's identity and natively canonicalizes the opened
+// file inside it, so reusing the value cannot admit a file outside the boundary.
+function scopedBoundaryRealPath(boundary: string): string | undefined {
+  if (!pathScope) {
+    return undefined;
+  }
+  if (!pathScope.boundaries.has(boundary)) {
+    let real: string | undefined;
+    try {
+      real = resolvePathViaExistingAncestorSync(boundary);
+    } catch {
+      // Let the root-scoped open report its own boundary failure.
+    }
+    pathScope.boundaries.set(boundary, real);
+  }
+  return pathScope.boundaries.get(boundary);
+}
+
+function scopedDirectoryRealPath(directories: Map<string, string>, directory: string): string {
+  const known = directories.get(directory);
+  if (known !== undefined) {
+    return known;
+  }
+  const parent = path.dirname(directory);
+  const real =
+    parent === directory || fs.lstatSync(directory).isSymbolicLink()
+      ? fs.realpathSync(directory)
+      : path.join(scopedDirectoryRealPath(directories, parent), path.basename(directory));
+  directories.set(directory, real);
+  return real;
+}
+
+/**
+ * Same result as `fs.realpathSync`, but within a path scope each ancestor is
+ * lstat'ed once rather than once per captured file. Capture-time only: source
+ * verification keeps an independent `fs.realpathSync` so ancestor changes made
+ * during capture are still rejected.
+ */
+export function resolvePluginSourceRealPath(source: string): string {
+  // Bun's realpathSync is native and may canonicalize spelling; only Node's
+  // component walk is reproduced exactly by joining non-link components.
+  if (!pathScope || Object.hasOwn(process.versions, "bun")) {
+    return fs.realpathSync(source);
+  }
+  const resolved = path.resolve(source);
+  const parent = path.dirname(resolved);
+  if (parent === resolved || fs.lstatSync(resolved).isSymbolicLink()) {
+    return fs.realpathSync(resolved);
+  }
+  return path.join(scopedDirectoryRealPath(pathScope.directories, parent), path.basename(resolved));
+}
+
 function withPluginSourceFile<T>(source: string, boundary: string, read: (fd: number) => T): T {
   const opened = openRootFileSync({
     absolutePath: source,
     rootPath: boundary,
+    rootRealPath: scopedBoundaryRealPath(boundary),
     boundaryLabel: "plugin build source",
     rejectHardlinks: false,
   });
