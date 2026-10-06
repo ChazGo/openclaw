@@ -156,6 +156,26 @@ function warmRead(directory: string): number {
   return performance.now() - startedAt;
 }
 
+// The id has to be known before install: with the bundled copy visible, install's
+// post-load rejects the installed package as lacking authoritative owner metadata.
+function bundledPluginIdForPackage(checkout: string, packageName: string): string | undefined {
+  const extensions = path.join(checkout, "extensions");
+  if (!fs.existsSync(extensions)) {
+    return undefined;
+  }
+  for (const entry of fs.readdirSync(extensions, { withFileTypes: true })) {
+    const packageJson = path.join(extensions, entry.name, "package.json");
+    if (!entry.isDirectory() || !fs.existsSync(packageJson)) {
+      continue;
+    }
+    const name = (JSON.parse(fs.readFileSync(packageJson, "utf8")) as { name?: unknown }).name;
+    if (name === packageName) {
+      return readPluginId(path.join(extensions, entry.name), entry.name);
+    }
+  }
+  return undefined;
+}
+
 function readPluginId(pluginRoot: string | undefined, packageName: string): string {
   const manifest = pluginRoot && path.join(pluginRoot, "openclaw.plugin.json");
   if (manifest && fs.existsSync(manifest)) {
@@ -362,47 +382,56 @@ async function main() {
     ...windowsEnvironment(root, false),
   };
   let pluginRoot: string | undefined;
-  let pluginId = options.pluginId;
   restoreHiddenBundled(options.checkout);
-  if (options.installSpec) {
-    const install = spawnSync(
-      process.execPath,
-      [
-        options.entry,
-        "plugins",
-        "install",
-        options.installSpec,
-        "--force",
-        "--accept-capabilities",
-        "--acknowledge-install-policy-warning",
-        ...options.installArgs,
-      ],
-      {
-        cwd: options.checkout,
-        env: { ...gatewayEnv, ...windowsEnvironment(root, true) },
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      },
-    );
-    fs.writeFileSync(path.join(logs, "install.log"), `${install.stdout}\n${install.stderr}`);
-    if (install.status !== 0) {
-      throw new Error(
-        `plugins install failed (${install.status}); see ${path.join(logs, "install.log")}`,
-      );
-    }
-    const packageName =
-      options.packageName ??
+  const packageName = options.installSpec
+    ? (options.packageName ??
       (options.installSpec.startsWith("@")
         ? `@${options.installSpec.slice(1).split("@")[0]}`
-        : (options.installSpec.split("@")[0] ?? ""));
-    pluginRoot = findInstalledPackage(path.join(root, "state"), packageName);
-    pluginId = options.pluginId ?? readPluginId(pluginRoot, packageName);
-  }
-
-  const hiddenBundled =
-    pluginId && !options.keepBundled ? hideBundled(options.checkout, pluginId) : [];
+        : (options.installSpec.split("@")[0] ?? "")))
+    : undefined;
+  let pluginId =
+    options.pluginId ??
+    (packageName ? bundledPluginIdForPackage(options.checkout, packageName) : undefined);
+  const hiddenBundled: string[] = [];
+  const hide = (id: string | undefined) => {
+    if (id && !options.keepBundled && !hiddenBundled.length) {
+      hiddenBundled.push(...hideBundled(options.checkout, id));
+    }
+  };
   const starts: Start[] = [];
   try {
+    hide(pluginId);
+    if (options.installSpec && packageName !== undefined) {
+      const install = spawnSync(
+        process.execPath,
+        [
+          options.entry,
+          "plugins",
+          "install",
+          options.installSpec,
+          "--force",
+          "--accept-capabilities",
+          "--acknowledge-install-policy-warning",
+          ...options.installArgs,
+        ],
+        {
+          cwd: options.checkout,
+          env: { ...gatewayEnv, ...windowsEnvironment(root, true) },
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+        },
+      );
+      fs.writeFileSync(path.join(logs, "install.log"), `${install.stdout}\n${install.stderr}`);
+      if (install.status !== 0) {
+        throw new Error(
+          `plugins install failed (${install.status}); see ${path.join(logs, "install.log")}`,
+        );
+      }
+      pluginRoot = findInstalledPackage(path.join(root, "state"), packageName);
+      pluginId = options.pluginId ?? readPluginId(pluginRoot, packageName);
+    }
+    hide(pluginId);
+
     for (let index = 0; index < options.starts; index += 1) {
       const warmReadMs = options.warmRead ? warmRead(path.join(root, "state")) : null;
       const start = await startGateway({

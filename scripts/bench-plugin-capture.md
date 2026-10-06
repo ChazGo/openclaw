@@ -51,10 +51,12 @@ completed"). `withinBudget` is false whenever `pluginLoaded` is false.
 
 From a source checkout, a bundled plugin with the same id outranks the installed one.
 The harness moves `dist\extensions\<id>` and `dist-runtime\extensions\<id>` into
-`.bench-hidden-bundled\` for the starts and restores them afterward (including after an
-interrupted run, on the next invocation); the JSON lists them in `hiddenBundled`.
-`--keep-bundled` disables this. The plugin id comes from the installed
-`openclaw.plugin.json`, or `--plugin-id`.
+`.bench-hidden-bundled\` before `plugins install` (whose post-load otherwise rejects the
+installed package) and keeps them there through the starts, restoring them afterward
+(including after an interrupted run, on the next invocation); the JSON lists them in
+`hiddenBundled`. `--keep-bundled` disables this. The plugin id comes from `--plugin-id`,
+else the source `extensions\*` package whose name matches the install spec, else the
+installed `openclaw.plugin.json`.
 
 ```powershell
 New-Item -ItemType Directory -Force bench-out | Out-Null
