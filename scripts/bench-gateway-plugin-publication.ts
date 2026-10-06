@@ -27,6 +27,14 @@ const OUTCOME_PATTERNS = [
   /background model runtime publication failed/u,
   /startup_failed/u,
 ];
+// Capture and admission rejections leave publication fast and empty; never count them as a pass.
+const PLUGIN_FAILURE_PATTERNS = [
+  /Native plugin companion changed before admission completed/u,
+  /Native plugin directory changed during admission/u,
+  /Plugin source changed while preparing its reload/u,
+  /Cannot capture plugin source/u,
+  /Boundary input changed while reading/u,
+];
 
 type Start = {
   index: number;
@@ -37,6 +45,10 @@ type Start = {
   buildStatsAtMs: number | null;
   withinBudget: boolean | null;
   outcomeLines: string[];
+  pluginLoaded: boolean | null;
+  pluginLoadMs: number | null;
+  pluginFailureLines: string[];
+  warmReadMs: number | null;
   exitCode: number | null;
   signal: string | null;
   logFile: string;
@@ -49,7 +61,7 @@ function parseArgs(argv: string[]) {
   const installArgs: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index] ?? "";
-    if (flag === "--no-plugin") {
+    if (flag === "--no-plugin" || flag === "--keep-bundled" || flag === "--warm-read") {
       flags.add(flag.slice(2));
       continue;
     }
@@ -82,7 +94,77 @@ function parseArgs(argv: string[]) {
     root: values.get("root"),
     label: values.get("label") ?? "unlabeled",
     output: values.get("output"),
+    pluginId: values.get("plugin-id"),
+    keepBundled: flags.has("keep-bundled"),
+    warmRead: flags.has("warm-read"),
   };
+}
+
+// A source checkout's bundled copy outranks an installed plugin with the same id, so the
+// install would not be what the Gateway loads. Move the bundled copies outside the
+// discovery roots for the run; the journal restores them even after an interrupted run.
+const HIDDEN_BUNDLED_DIR = ".bench-hidden-bundled";
+
+function restoreHiddenBundled(checkout: string): void {
+  const journal = path.join(checkout, HIDDEN_BUNDLED_DIR, "journal.json");
+  if (!fs.existsSync(journal)) {
+    return;
+  }
+  const moves = JSON.parse(fs.readFileSync(journal, "utf8")) as Array<{ from: string; to: string }>;
+  for (const move of moves) {
+    if (fs.existsSync(move.to) && !fs.existsSync(move.from)) {
+      fs.renameSync(move.to, move.from);
+    }
+  }
+  fs.rmSync(path.join(checkout, HIDDEN_BUNDLED_DIR), { recursive: true, force: true });
+}
+
+function hideBundled(checkout: string, pluginId: string): string[] {
+  const moves = ["dist", "dist-runtime"]
+    .map((tree) => ({
+      from: path.join(checkout, tree, "extensions", pluginId),
+      to: path.join(checkout, HIDDEN_BUNDLED_DIR, `${tree}-${pluginId}`),
+    }))
+    .filter((move) => fs.existsSync(move.from));
+  if (!moves.length) {
+    return [];
+  }
+  fs.mkdirSync(path.join(checkout, HIDDEN_BUNDLED_DIR), { recursive: true });
+  fs.writeFileSync(path.join(checkout, HIDDEN_BUNDLED_DIR, "journal.json"), JSON.stringify(moves));
+  for (const move of moves) {
+    fs.renameSync(move.from, move.to);
+  }
+  return moves.map((move) => path.relative(checkout, move.from));
+}
+
+// Optional control: some Windows hosts stamp a file's ctime on its first read (on-access
+// scanning). Reading every installed file once before a start isolates capture cost from
+// that stamping; it is not part of the measured start.
+function warmRead(directory: string): number {
+  const startedAt = performance.now();
+  const pending = [directory];
+  for (const current of pending) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const filename = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(filename);
+      } else if (entry.isFile()) {
+        fs.readFileSync(filename);
+      }
+    }
+  }
+  return performance.now() - startedAt;
+}
+
+function readPluginId(pluginRoot: string | undefined, packageName: string): string {
+  const manifest = pluginRoot && path.join(pluginRoot, "openclaw.plugin.json");
+  if (manifest && fs.existsSync(manifest)) {
+    const id = (JSON.parse(fs.readFileSync(manifest, "utf8")) as { id?: unknown }).id;
+    if (typeof id === "string" && id) {
+      return id;
+    }
+  }
+  return packageName.split("/").at(-1) ?? packageName;
 }
 
 function windowsEnvironment(root: string, passUserProfile: boolean): NodeJS.ProcessEnv {
@@ -141,6 +223,8 @@ async function startGateway(params: {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   logFile: string;
+  pluginId?: string;
+  warmReadMs: number | null;
 }): Promise<Start> {
   const port = await getFreePort();
   const log = fs.createWriteStream(params.logFile);
@@ -152,6 +236,10 @@ async function startGateway(params: {
   });
   const trace: Record<string, number> = {};
   const outcomeLines: string[] = [];
+  const pluginFailureLines: string[] = [];
+  const pluginLinePattern = params.pluginId
+    ? new RegExp(`\\b${params.pluginId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\b`, "u")
+    : undefined;
   let readyMs: number | null = null;
   let readyzMs: number | null = null;
   let modelRuntimeSeen = false;
@@ -184,6 +272,15 @@ async function startGateway(params: {
         outcomeLines.push(`${((performance.now() - startedAt) / 1000).toFixed(1)}s ${line.trim()}`);
         publicationFailed ||= !/startup degraded after/u.test(line);
       }
+      if (
+        params.pluginId &&
+        (PLUGIN_FAILURE_PATTERNS.some((pattern) => pattern.test(line)) ||
+          (pluginLinePattern?.test(line) === true && /\b(failed|error)\b/iu.test(line)))
+      ) {
+        pluginFailureLines.push(
+          `${((performance.now() - startedAt) / 1000).toFixed(1)}s ${line.trim()}`,
+        );
+      }
     }
   };
   child.stdout.on("data", (chunk: Buffer) => consume("stdout", chunk));
@@ -211,6 +308,20 @@ async function startGateway(params: {
     log.end(resolve);
   });
   const modelRuntimeMs = trace["sidecars.model-runtime"] ?? null;
+  const pluginTrace = params.pluginId
+    ? `plugins.gateway-load.plugin.${params.pluginId}.`
+    : undefined;
+  const pluginLoadMs = pluginTrace ? (trace[`${pluginTrace}loadMs`] ?? null) : null;
+  // Positive evidence: the loader timed this plugin's load and register without a recorded
+  // failure, publication reached model-runtime, and no capture/admission rejection logged.
+  const pluginLoaded = pluginTrace
+    ? pluginLoadMs !== null &&
+      trace[`${pluginTrace}loadFailedCount`] === 0 &&
+      trace[`${pluginTrace}registerMs`] !== undefined &&
+      trace[`${pluginTrace}registerFailedCount`] === 0 &&
+      modelRuntimeMs !== null &&
+      !pluginFailureLines.length
+    : null;
   return {
     index: params.index,
     readyMs,
@@ -221,8 +332,12 @@ async function startGateway(params: {
     withinBudget:
       modelRuntimeMs === null
         ? null
-        : modelRuntimeMs < PUBLICATION_BUDGET_MS && !outcomeLines.length,
+        : modelRuntimeMs < PUBLICATION_BUDGET_MS && !outcomeLines.length && pluginLoaded !== false,
     outcomeLines,
+    pluginLoaded,
+    pluginLoadMs,
+    pluginFailureLines,
+    warmReadMs: params.warmReadMs,
     exitCode: exit.code,
     signal: exit.signal,
     logFile: params.logFile,
@@ -247,6 +362,8 @@ async function main() {
     ...windowsEnvironment(root, false),
   };
   let pluginRoot: string | undefined;
+  let pluginId = options.pluginId;
+  restoreHiddenBundled(options.checkout);
   if (options.installSpec) {
     const install = spawnSync(
       process.execPath,
@@ -279,26 +396,38 @@ async function main() {
         ? `@${options.installSpec.slice(1).split("@")[0]}`
         : (options.installSpec.split("@")[0] ?? ""));
     pluginRoot = findInstalledPackage(path.join(root, "state"), packageName);
+    pluginId = options.pluginId ?? readPluginId(pluginRoot, packageName);
   }
 
+  const hiddenBundled =
+    pluginId && !options.keepBundled ? hideBundled(options.checkout, pluginId) : [];
   const starts: Start[] = [];
-  for (let index = 0; index < options.starts; index += 1) {
-    const start = await startGateway({
-      index,
-      entry: options.entry,
-      checkout: options.checkout,
-      env: gatewayEnv,
-      timeoutMs: options.timeoutMs,
-      logFile: path.join(logs, `gateway-start-${index + 1}.log`),
-    });
-    starts.push(start);
-    console.log(
-      `[${options.label}] start ${index + 1}/${options.starts}: model-runtime ` +
-        `${start.modelRuntimeMs === null ? "n/a" : `${(start.modelRuntimeMs / 1000).toFixed(1)}s`} ` +
-        `(budget ${PUBLICATION_BUDGET_MS / 1000}s, ${start.withinBudget ? "within" : "NOT within"}), ` +
-        `ready ${start.readyMs === null ? "n/a" : `${(start.readyMs / 1000).toFixed(1)}s`}` +
-        (start.outcomeLines.length ? `; ${start.outcomeLines[0]}` : ""),
-    );
+  try {
+    for (let index = 0; index < options.starts; index += 1) {
+      const warmReadMs = options.warmRead ? warmRead(path.join(root, "state")) : null;
+      const start = await startGateway({
+        index,
+        entry: options.entry,
+        checkout: options.checkout,
+        env: gatewayEnv,
+        timeoutMs: options.timeoutMs,
+        logFile: path.join(logs, `gateway-start-${index + 1}.log`),
+        pluginId,
+        warmReadMs,
+      });
+      starts.push(start);
+      console.log(
+        `[${options.label}] start ${index + 1}/${options.starts}: model-runtime ` +
+          `${start.modelRuntimeMs === null ? "n/a" : `${(start.modelRuntimeMs / 1000).toFixed(1)}s`} ` +
+          `(budget ${PUBLICATION_BUDGET_MS / 1000}s, ${start.withinBudget ? "within" : "NOT within"}), ` +
+          `ready ${start.readyMs === null ? "n/a" : `${(start.readyMs / 1000).toFixed(1)}s`}` +
+          (pluginId ? `, ${pluginId} ${start.pluginLoaded ? "loaded" : "NOT loaded"}` : "") +
+          (start.outcomeLines.length ? `; ${start.outcomeLines[0]}` : "") +
+          (start.pluginFailureLines.length ? `; ${start.pluginFailureLines[0]}` : ""),
+      );
+    }
+  } finally {
+    restoreHiddenBundled(options.checkout);
   }
 
   const result = {
@@ -312,6 +441,10 @@ async function main() {
     os: os.release(),
     installSpec: options.installSpec ?? null,
     pluginRoot: pluginRoot ?? null,
+    pluginId: pluginId ?? null,
+    // Bundled same-id copies moved aside so the installed plugin is the one loaded.
+    hiddenBundled,
+    warmRead: options.warmRead,
     root,
     publicationBudgetMs: PUBLICATION_BUDGET_MS,
     // Start 1 is the first start after install; later starts are restarts on the same state.
