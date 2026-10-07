@@ -251,6 +251,31 @@ describe("createMxcSandboxBackendFactory", () => {
     expect(listAgentIds).toHaveBeenCalledTimes(5);
   });
 
+  test("reads one roster snapshot per creation, so a removal that lands later fails the next creation", async () => {
+    let roster = ["main", "analyst"];
+    const listAgentIds = vi.fn(() => {
+      const snapshot = roster;
+      // The removal commits after this creation read the roster.
+      roster = ["main"];
+      return snapshot;
+    });
+    const createBackend = createMxcSandboxBackendFactory(
+      resolveConfig({ agents: { analyst: { network: "none" } } }),
+      { listAgentIds },
+    );
+    const params = {
+      agentId: "analyst",
+      sessionKey: "agent:analyst:main",
+      scopeKey: "agent:analyst",
+      workspaceDir: baseParams.workdir,
+      agentWorkspaceDir: baseParams.workdir,
+      cfg: createSandboxBackendTestConfig({ scope: "agent" }),
+    };
+    await expect(createBackend(params)).resolves.toBeDefined();
+    await expect(createBackend(params)).rejects.toThrow('unknown agent ID "analyst"');
+    expect(listAgentIds).toHaveBeenCalledTimes(2);
+  });
+
   test("checks registration authority before reading the roster", async () => {
     const listAgentIds = vi.fn(() => ["main"]);
     const createBackend = createMxcSandboxBackendFactory(baseConfig, {
