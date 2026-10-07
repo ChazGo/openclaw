@@ -400,5 +400,5 @@ pnpm test:extension mxc
 For policy-only edits, the focused coverage is in:
 
 ```powershell
-pnpm test:extension mxc extensions/mxc/test/config.test.ts extensions/mxc/test/sandbox-policy-loader.test.ts extensions/mxc/test/mxc-backend.test.ts
+pnpm test:extension mxc extensions/mxc/test/config.test.ts extensions/mxc/test/sandbox-policy-loader.test.ts extensions/mxc/test/mxc-backend.test.ts extensions/mxc/test/mxc-backend-agent-policy.test.ts
 ```

@@ -665,6 +665,7 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "extensions/msteams/src/sdk.test.ts",
   "extensions/msteams/src/send.handoff.test.ts",
   "extensions/msteams/src/sso-token-store.test.ts",
+  "extensions/mxc/test/mxc-backend-agent-policy.test.ts",
   "extensions/mxc/test/mxc-backend.test.ts",
   "extensions/nextcloud-talk/src/channel.lifecycle.test.ts",
   "extensions/nextcloud-talk/src/inbound.authz.test.ts",
