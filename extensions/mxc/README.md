@@ -130,7 +130,10 @@ and rejects new work after that owner retires or is replaced. The exec spec carr
 the same callback through core's deferred native process admission; cleanup remains
 available after retirement. Gateway restart and plugin disable retire the
 registration: its factory creates no new backends and its handles and exec specs
-reject new work. A hot reload that replaces the plugin publishes a new
+reject new work. Filesystem-bridge mutations pass the same check to fs-safe as
+`assertBeforeMutation`, so a write still being prepared when the registration
+retires is refused before it changes the host filesystem. A hot reload that
+replaces the plugin publishes a new
 registration for new sandbox contexts but does not revoke admitted work: a turn
 admitted before the reload keeps the generation, handles, and policy it started
 with until it ends. Every command still receives a fresh native container ID and

@@ -77,7 +77,10 @@ scope still work. Shared scope without a selected override is unchanged.
 
 Each handle snapshots its policy files. File edits do not revoke existing handles
 or in-flight commands. Gateway restart and plugin disable retire the MXC
-registration: it creates no new backends, and its handles reject new commands. A
+registration: it creates no new backends, and its handles reject new commands.
+Filesystem-tool mutations recheck the registration immediately before they change
+the host filesystem, so a write that is still being prepared when the registration
+retires does not land. A
 hot reload that replaces the plugin serves new sandbox contexts from the new
 registration but does not revoke admitted work; a turn admitted before the reload
 keeps the handles and policy it started with until it ends.
