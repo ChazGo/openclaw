@@ -17,6 +17,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveConfig, type MxcConfig } from "../src/config.js";
 import { createMxcSandboxBackendFactory } from "../src/mxc-backend-factory.js";
 import { createMxcSandboxBackendHandle, mxcSandboxBackendManager } from "../src/mxc-backend.js";
+import {
+  decodePayload,
+  decodeRequest,
+  environmentEntries,
+  objectField,
+  stringArrayField,
+} from "./launcher-payload.test-support.js";
 
 const { spawnCommandMock, execFileSyncMock, mockedHomeDir } = vi.hoisted(() => ({
   spawnCommandMock: vi.fn(),
@@ -69,42 +76,6 @@ function sandboxPolicyConfig(policy: unknown, config: MxcConfig = baseConfig): M
   };
 }
 
-type LauncherPayload = {
-  request: Record<string, unknown>;
-  options: Record<string, unknown>;
-};
-
-function decodePayload(
-  argv: readonly string[],
-  options: { cleanupPayloadFile?: boolean } = {},
-): LauncherPayload {
-  const payloadFileIndex = argv.indexOf("--payload-file");
-  const payloadFile = argv[payloadFileIndex + 1];
-  if (payloadFileIndex >= 0 && payloadFile !== undefined) {
-    const decoded = JSON.parse(readFileSync(payloadFile, "utf-8")) as LauncherPayload;
-    if (options.cleanupPayloadFile !== false) {
-      rmSync(path.dirname(payloadFile), { force: true, recursive: true });
-    }
-    return decoded;
-  }
-  const payloadIndex = argv.indexOf("--payload");
-  const payload = argv[payloadIndex + 1];
-  if (payloadIndex < 0 || payload === undefined) {
-    throw new Error(`expected --payload in argv: ${JSON.stringify(argv)}`);
-  }
-  return JSON.parse(Buffer.from(payload, "base64").toString("utf-8")) as LauncherPayload;
-}
-
-function decodeRequest(argv: readonly string[]): Record<string, unknown> {
-  return decodePayload(argv).request;
-}
-
-function environmentEntries(request: Record<string, unknown>): string[] {
-  return Object.entries(objectField(request, "environment")).map(
-    ([key, value]) => `${key}=${String(value)}`,
-  );
-}
-
 const nativeArch = process.arch === "arm64" ? "arm64" : "x64";
 
 function createNativeOverride(): { executorPath: string; binDir: string; archDir: string } {
@@ -116,18 +87,6 @@ function createNativeOverride(): { executorPath: string; binDir: string; archDir
   writeFileSync(executorPath, "");
   writeFileSync(path.join(archDir, "mxc_ffi.dll"), "");
   return { executorPath, binDir, archDir };
-}
-
-function objectField(value: Record<string, unknown>, key: string): Record<string, unknown> {
-  const field = value[key];
-  expect(field).toEqual(expect.any(Object));
-  return field as Record<string, unknown>;
-}
-
-function stringArrayField(value: Record<string, unknown>, key: string): string[] {
-  const field = value[key];
-  expect(field).toEqual(expect.any(Array));
-  return field as string[];
 }
 
 function createSandboxBackendTestConfig(
