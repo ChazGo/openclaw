@@ -128,9 +128,12 @@ not revoke grants from an existing handle or an in-flight command. This snapshot
 is not execution authority: MXC retains the host's `assertRuntimeCurrent` callback
 and rejects new work after that owner retires or is replaced. The exec spec carries
 the same callback through core's deferred native process admission; cleanup remains
-available after retirement. Disabling or replacing the plugin registration also
-retires its retained factories, handles, and exec specs; resolve a fresh context
-after reload. Every command still receives a fresh native container ID and
+available after retirement. Gateway restart and plugin disable retire the
+registration: its factory creates no new backends and its handles and exec specs
+reject new work. A hot reload that replaces the plugin publishes a new
+registration for new sandbox contexts but does not revoke admitted work: a turn
+admitted before the reload keeps the generation, handles, and policy it started
+with until it ends. Every command still receives a fresh native container ID and
 `destroyOnExit`; scope controls
 workspace reuse, not native container lifetime. Internal filesystem shell helpers
 always block network and use the smallest of 30 seconds, the configured timeout,

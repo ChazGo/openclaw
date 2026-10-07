@@ -76,7 +76,12 @@ effective shared scope; role-required or private-skill paths forced to isolated
 scope still work. Shared scope without a selected override is unchanged.
 
 Each handle snapshots its policy files. File edits do not revoke existing handles
-or in-flight commands. Native containers remain per-command and destroy on exit.
+or in-flight commands. Gateway restart and plugin disable retire the MXC
+registration: it creates no new backends, and its handles reject new commands. A
+hot reload that replaces the plugin serves new sandbox contexts from the new
+registration but does not revoke admitted work; a turn admitted before the reload
+keeps the handles and policy it started with until it ends.
+Native containers remain per-command and destroy on exit.
 Internal shell helpers always block network and cap timeouts at the smallest of
 30 seconds, configured timeout, and selected baseline timeout.
 
