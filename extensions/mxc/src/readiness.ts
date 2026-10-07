@@ -127,14 +127,33 @@ function appContainerTierNotice(tier: string): string {
   );
 }
 
+// @microsoft/mxc-sdk 1.0.0 refuses non-PTY commands on Windows outside this Node
+// range (dist/bindings/native-stdio.js), which is narrower than OpenClaw's own
+// engines range. The launcher runs on the Gateway's Node, so check it once here
+// instead of failing every command. Recheck on each SDK bump.
+const WINDOWS_NODE_REQUIREMENT = "24.21.0 or newer within Node.js 24, or 26.8.0 or newer";
+
+function supportsMxcWindowsNode(version: string): boolean {
+  const [major = 0, minor = 0] = version.split(".").map((part) => Number.parseInt(part, 10));
+  return (major === 24 && minor >= 21) || (major === 26 && minor >= 8) || major > 26;
+}
+
 /**
- * Fails plugin activation unless MXC's host probe, run with the pinned native
+ * Fails plugin activation unless the Gateway's Node.js meets MXC SDK 1.0's
+ * Windows requirement and MXC's host probe, run with the pinned native
  * components, selects an isolation tier. The AppContainer-tier isolation notice
  * and the probe's degradation warnings are reported but do not block activation.
  */
 export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
   if (process.platform !== "win32") {
     return;
+  }
+  if (!supportsMxcWindowsNode(process.versions.node)) {
+    throw new Error(
+      `[mxc] MXC Windows ProcessContainer sandbox is not ready: @microsoft/mxc-sdk 1.0 ` +
+        `requires Node.js ${WINDOWS_NODE_REQUIREMENT} on Windows, and the Gateway runs ` +
+        `Node.js ${process.versions.node}. Upgrade Node.js and restart the Gateway.`,
+    );
   }
   const probe = probeMxcIsolationTier(params.nativeEnv);
   if (probe.tier !== "base-container") {

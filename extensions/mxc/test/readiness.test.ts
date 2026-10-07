@@ -9,15 +9,21 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const originalNodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
 function setPlatform(platform: NodeJS.Platform) {
   Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
 }
+function setNodeVersion(version: string) {
+  Object.defineProperty(process.versions, "node", { ...originalNodeVersion, value: version });
+}
 beforeEach(() => {
   setPlatform("win32");
+  setNodeVersion("24.21.0");
   vi.mocked(execFileSync).mockReset();
 });
 afterEach(() => {
   Object.defineProperty(process, "platform", originalPlatform);
+  Object.defineProperty(process.versions, "node", originalNodeVersion);
   vi.restoreAllMocks();
 });
 
@@ -109,6 +115,26 @@ describe("assertMxcReadiness", () => {
     expect(warn.mock.calls[0]?.[0]).toMatch(
       /base-container isolation tier: DACL deny augmentation is unavailable/u,
     );
+  });
+
+  test.each(["24.18.0", "25.9.0", "26.7.0"])(
+    "rejects Node.js %s, which MXC SDK 1.0 cannot run commands on, before probing",
+    (version) => {
+      setNodeVersion(version);
+      const exec = mockProbe();
+
+      expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+        `requires Node.js 24.21.0 or newer within Node.js 24, or 26.8.0 or newer on Windows, and the Gateway runs Node.js ${version}`,
+      );
+      expect(exec).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["26.8.0", "27.0.0"])("accepts Node.js %s", (version) => {
+    setNodeVersion(version);
+    mockProbe();
+
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
   });
 
   test("rejects hosts where MXC cannot select an isolation tier", () => {

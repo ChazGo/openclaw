@@ -198,6 +198,8 @@ describe("registerMxcPlugin", () => {
     const { assertMxcReadiness: runMxcReadiness } =
       await vi.importActual<typeof import("../src/readiness.js")>("../src/readiness.js");
     const root = mkdtempSync(path.join(tmpdir(), "mxc-plugin-override-"));
+    const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+    Object.defineProperty(process.versions, "node", { ...nodeVersion, value: "24.21.0" });
     try {
       const legacyOverride = path.join(root, "tools", "wxc-exec.exe");
       const compatibleOverride = path.join(root, "release", arch, "wxc-exec.exe");
@@ -247,6 +249,7 @@ describe("registerMxcPlugin", () => {
       await recovered.stop();
       expect(readBackend()).toEqual(original);
     } finally {
+      Object.defineProperty(process.versions, "node", nodeVersion);
       rmSync(root, { force: true, recursive: true });
     }
   });

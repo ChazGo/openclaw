@@ -64,6 +64,9 @@ help stay in sync with plugin runtime validation.
 ## Supported
 
 - Windows hosts with the MXC executor installed through `@microsoft/mxc-sdk`.
+- A Gateway running Node.js 24.21.0 or newer within Node.js 24, or 26.8.0 or
+  newer. `@microsoft/mxc-sdk@1.0.0` refuses to run commands on Windows with
+  older Node.js releases, so the plugin blocks activation there.
 - Explicit opt-in after plugin install with `sandbox.backend: "mxc"`.
 - MXC `process` containment, which resolves to Windows ProcessContainer.
 - `workspaceAccess`:
@@ -266,7 +269,8 @@ agents may still use them.
 
 ## Host readiness
 
-Before registering the sandbox backend, the plugin runs MXC SDK 1.0's host
+Before registering the sandbox backend, the plugin checks that the Gateway's
+Node.js meets MXC SDK 1.0's Windows requirement, then runs MXC SDK 1.0's host
 check (`probe()` from `@microsoft/mxc-sdk/v1`) through its Node launcher, with
 the same pinned native components it launches commands with, including an
 `mxcBinaryPath` override. The check must select an isolation tier. MXC's tier
