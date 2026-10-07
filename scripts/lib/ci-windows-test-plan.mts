@@ -23,7 +23,9 @@ const fileSeconds: Readonly<Record<string, number>> = {
   "extensions/msteams/src/media-helpers.test.ts": 9.8,
   "extensions/msteams/src/messenger.test.ts": 12.2,
   "extensions/mxc/test/fs-bridge.test.ts": 17.3,
-  "extensions/mxc/test/mxc-backend.test.ts": 8.1,
+  // Split from the measured 8.1s mxc-backend file by per-test body time (80/20).
+  "extensions/mxc/test/mxc-backend-agent-policy.test.ts": 1.6,
+  "extensions/mxc/test/mxc-backend.test.ts": 6.5,
   "extensions/mxc/test/path-comparison.test.ts": 1.6,
   "extensions/mxc/test/sandbox-policy-loader.test.ts": 0.1,
   "packages/terminal-core/src/display-string.test.ts": 0.1,
