@@ -13,6 +13,7 @@ import {
   prepareAgentRunAdmission,
   resolveAdmittedRunActiveAssertion,
 } from "../../src/agents/admitted-run-context.js";
+import { runExecProcess } from "../../src/agents/bash-tools.exec-runtime.js";
 import {
   registerSandboxBackend,
   type CreateSandboxBackendParams,
@@ -24,6 +25,7 @@ import {
 import { sandboxConfig } from "../../src/agents/test-helpers/sandbox-backend-fixtures.js";
 import * as localWorkspaceProjection from "../../src/gateway/worker-environments/local-workspace-projection.js";
 import type { LocalWorkspaceOwner } from "../../src/gateway/worker-environments/local-workspace-types.js";
+import { getProcessSupervisor } from "../../src/process/supervisor/index.js";
 import type { SkillSnapshot } from "../../src/skills/types.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../src/state/openclaw-agent-db.js";
 
@@ -198,6 +200,118 @@ describe("MXC sandbox context composition", () => {
         replacement.close();
         restore();
       }
+    },
+  );
+
+  describe.runIf(process.platform === "win32")(
+    "registration retirement at the effect boundary",
+    () => {
+      const retiredMessage = "MXC sandbox registration retired; resolve a new sandbox context.";
+
+      async function resolveRetirableSandbox(name: string) {
+        const root = await createSandboxFixtureDir("mxc-retire-" + name);
+        const workspaceDir = path.join(root, "workspace");
+        await fs.mkdir(workspaceDir);
+        const config = sandboxConfig("mxc", { scope: "agent", workspaceAccess: "rw" });
+        config.session = { store: path.join(root, "sessions.json") };
+        const registration: { retired: boolean; onCheck?: () => void } = { retired: false };
+        const restore = registerSandboxBackend(
+          "mxc",
+          createMxcSandboxBackendFactory(
+            resolveConfig({ agents: { analyst: { network: "none" } } }),
+            {
+              ...configuredRoster,
+              // Same contract as plugin.ts: cleanup for disable/restart flips this flag.
+              assertRegistrationCurrent: () => {
+                registration.onCheck?.();
+                if (registration.retired) {
+                  throw new Error(retiredMessage);
+                }
+              },
+            },
+          ),
+        );
+        const sandbox = await resolveSandboxContext({
+          config,
+          agentId: "analyst",
+          sessionKey: "agent:analyst:retire-" + name,
+          workspaceDir,
+        });
+        return { sandbox: sandbox!, workspaceDir, registration, restore };
+      }
+
+      it("refuses a bridge write when retirement lands inside fs-safe mutation admission", async () => {
+        const { sandbox, workspaceDir, registration, restore } =
+          await resolveRetirableSandbox("bridge-write");
+        const bridge = sandbox.fsBridge!;
+        let retiredFrom: string | undefined;
+        try {
+          await bridge.writeFile({ filePath: "admitted.txt", data: "admitted" });
+          expect(await fs.readFile(path.join(workspaceDir, "admitted.txt"), "utf8")).toBe(
+            "admitted",
+          );
+          // Retire on the first registration check issued from the fs-safe package itself,
+          // after the bridge's own resolve/open checks passed.
+          registration.onCheck = () => {
+            const stack = new Error().stack ?? "";
+            if (!registration.retired && /@openclaw[\\/]fs-safe/.test(stack)) {
+              registration.retired = true;
+              retiredFrom = stack;
+            }
+          };
+          await expect(
+            bridge.writeFile({ filePath: path.join("deferred", "retired.txt"), data: "late" }),
+          ).rejects.toThrow(retiredMessage);
+          expect(retiredFrom).toMatch(/@openclaw[\\/]fs-safe/);
+          await expect(fs.stat(path.join(workspaceDir, "deferred"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        } finally {
+          restore();
+        }
+      });
+
+      it("refuses retained execution when retirement lands during deferred pre-spawn work", async () => {
+        const { sandbox, registration, restore } = await resolveRetirableSandbox("exec");
+        const backend = sandbox.backend!;
+        const supervisorSpawn = vi.spyOn(getProcessSupervisor(), "spawn");
+        const finalizeExec = vi.fn(backend.finalizeExec!.bind(backend));
+        const beforeSpawn = vi.fn(async () => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          registration.retired = true;
+          return undefined;
+        });
+        try {
+          await expect(
+            runExecProcess({
+              command: "echo retired",
+              workdir: sandbox.workspaceDir,
+              env: {},
+              usePty: false,
+              warnings: [],
+              maxOutput: 1000,
+              pendingMaxOutput: 1000,
+              notifyOnExit: false,
+              timeoutSec: 30,
+              sessionKey: "agent:analyst:retire-exec",
+              sandbox: {
+                containerName: sandbox.containerName,
+                workspaceDir: sandbox.workspaceDir,
+                containerWorkdir: sandbox.containerWorkdir,
+                buildExecSpec: backend.buildExecSpec.bind(backend),
+                finalizeExec,
+              },
+              beforeSpawn,
+            }),
+          ).rejects.toThrow(retiredMessage);
+          expect(beforeSpawn).toHaveBeenCalledOnce();
+          expect(supervisorSpawn).not.toHaveBeenCalled();
+          expect(finalizeExec).toHaveBeenCalledOnce();
+        } finally {
+          supervisorSpawn.mockRestore();
+          restore();
+        }
+      });
     },
   );
 
