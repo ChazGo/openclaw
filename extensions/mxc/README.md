@@ -68,10 +68,16 @@ Set `plugins.entries.mxc.config.agents.<agentId>` to override `network`,
 `timeoutSeconds`, or `mxcPolicyPaths` for one configured agent. Keys must be
 canonical lowercase IDs matching `^[a-z0-9_][a-z0-9_-]{0,63}$`, including
 underscore-prefixed IDs such as `_worker`. Unsafe object keys (`__proto__`,
-`prototype`, and `constructor`), unknown agents, unknown fields, invalid values,
-and relative policy paths are rejected. Roster membership changes hot-reload
-plugins and revalidate these references even when the MXC settings are unchanged.
-Executor location, containment, and debug settings remain plugin-wide.
+`prototype`, and `constructor`), unknown fields, invalid values, and relative
+policy paths are rejected. Executor location, containment, and debug settings
+remain plugin-wide.
+
+Each override must name an agent in the live roster. MXC checks this whenever it
+creates a backend handle, not at plugin registration, so roster edits do not
+reload plugins. While any override names an unconfigured agent (for example after
+removing or renaming it), every MXC backend creation fails closed with
+`Invalid mxc plugin config: unknown agent ID "<id>"; configure the agent or remove plugins.entries.mxc.config.agents.<id>.`
+A handle already created keeps its policy for the rest of its turn.
 
 ```json5
 {

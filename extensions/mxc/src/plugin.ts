@@ -13,14 +13,6 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
   }
 
   const config = resolveConfig(api.pluginConfig);
-  const agentIds = new Set(listAgentIds(api.config));
-  for (const id of Object.keys(config.agents ?? {})) {
-    if (!agentIds.has(id)) {
-      throw new Error(
-        `Invalid mxc plugin config: unknown agent ID "${id}"; configure the agent first.`,
-      );
-    }
-  }
 
   if (process.platform !== "win32") {
     console.warn(
@@ -47,10 +39,14 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
 
   let retired = false;
   const unregister = registerSandboxBackend("mxc", {
-    factory: createMxcSandboxBackendFactory(config, () => {
-      if (retired) {
-        throw new Error("MXC sandbox registration retired; resolve a new sandbox context.");
-      }
+    factory: createMxcSandboxBackendFactory(config, {
+      // Roster edits do not reload plugins; read the live roster for each backend.
+      listAgentIds: () => listAgentIds(api.runtime.config.current()),
+      assertRegistrationCurrent: () => {
+        if (retired) {
+          throw new Error("MXC sandbox registration retired; resolve a new sandbox context.");
+        }
+      },
     }),
     manager: mxcSandboxBackendManager,
   });

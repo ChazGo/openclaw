@@ -169,6 +169,8 @@ function createSandboxBackendTestConfig(
   };
 }
 
+const configuredRoster = { listAgentIds: () => ["main", "analyst", "reviewer", "other"] };
+
 const MXC_TEST_ENV_KEYS = [
   "APPDATA",
   "ComSpec",
@@ -206,7 +208,7 @@ async function withProcessEnv(
 
 describe("createMxcSandboxBackendFactory", () => {
   test("hashes workspace-qualified scopes without truncating their identity", async () => {
-    const createBackend = createMxcSandboxBackendFactory(baseConfig);
+    const createBackend = createMxcSandboxBackendFactory(baseConfig, configuredRoster);
     const handle = await createBackend({
       sessionKey: "agent:main:main",
       scopeKey: `agent:main:workspace:${"a".repeat(32)}`,
@@ -216,6 +218,57 @@ describe("createMxcSandboxBackendFactory", () => {
     });
 
     expect(handle.runtimeId).toMatch(/^openclaw-mxc-workspace-[a-f0-9]{32}$/u);
+  });
+
+  test("validates overrides against the live roster on every backend creation", async () => {
+    let roster: string[] = ["main"];
+    const listAgentIds = vi.fn(() => roster);
+    const createBackend = createMxcSandboxBackendFactory(
+      resolveConfig({ agents: { analyst: { network: "none" } } }),
+      { listAgentIds },
+    );
+    const create = (agentId: string) =>
+      createBackend({
+        agentId,
+        sessionKey: `agent:${agentId}:main`,
+        scopeKey: `agent:${agentId}`,
+        workspaceDir: baseParams.workdir,
+        agentWorkspaceDir: baseParams.workdir,
+        cfg: createSandboxBackendTestConfig({ scope: "agent" }),
+      });
+    const unknownAnalyst =
+      'Invalid mxc plugin config: unknown agent ID "analyst"; configure the agent or remove plugins.entries.mxc.config.agents.analyst.';
+
+    // A stale override blocks every agent, including agents that use plugin defaults.
+    await expect(create("main")).rejects.toThrow(unknownAnalyst);
+    roster = ["main", "analyst"];
+    await expect(create("analyst")).resolves.toBeDefined();
+    await expect(create("main")).resolves.toBeDefined();
+    roster = ["main", "analyst-renamed"];
+    await expect(create("main")).rejects.toThrow(unknownAnalyst);
+    roster = [];
+    await expect(create("analyst")).rejects.toThrow(unknownAnalyst);
+    expect(listAgentIds).toHaveBeenCalledTimes(5);
+  });
+
+  test("checks registration authority before reading the roster", async () => {
+    const listAgentIds = vi.fn(() => ["main"]);
+    const createBackend = createMxcSandboxBackendFactory(baseConfig, {
+      listAgentIds,
+      assertRegistrationCurrent: () => {
+        throw new Error("registration retired");
+      },
+    });
+    await expect(
+      createBackend({
+        sessionKey: "agent:main:main",
+        scopeKey: "agent:main",
+        workspaceDir: baseParams.workdir,
+        agentWorkspaceDir: baseParams.workdir,
+        cfg: createSandboxBackendTestConfig({ scope: "agent" }),
+      }),
+    ).rejects.toThrow("registration retired");
+    expect(listAgentIds).not.toHaveBeenCalled();
   });
 });
 
@@ -257,7 +310,11 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         resolveConfig({
           agents: { analyst: { network: "none" } },
         }),
-        authority === "registration" ? assertRuntimeCurrent : undefined,
+        {
+          ...configuredRoster,
+          assertRegistrationCurrent:
+            authority === "registration" ? assertRuntimeCurrent : undefined,
+        },
       );
       const handle = await factory({
         agentId: "analyst",
@@ -292,6 +349,37 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       }
     },
   );
+
+  test("an admitted handle keeps its policy after its agent leaves the roster", async () => {
+    let roster = ["analyst"];
+    const createBackend = createMxcSandboxBackendFactory(
+      resolveConfig({ agents: { analyst: { network: "none", timeoutSeconds: 7 } } }),
+      { listAgentIds: () => roster },
+    );
+    const handle = await createBackend({
+      agentId: "analyst",
+      sessionKey: "agent:analyst:main",
+      scopeKey: "agent:analyst",
+      workspaceDir: baseParams.workdir,
+      agentWorkspaceDir: baseParams.workdir,
+      cfg: createSandboxBackendTestConfig({ scope: "agent" }),
+    });
+    roster = [];
+    const spec = await handle.buildExecSpec({ command: "echo admitted", env: {}, usePty: false });
+    try {
+      expect(decodePayload(spec.argv, { cleanupPayloadFile: false }).config).toMatchObject({
+        process: { timeout: 7000 },
+        network: { defaultPolicy: "block" },
+      });
+    } finally {
+      await handle.finalizeExec?.({
+        status: "completed",
+        exitCode: 0,
+        timedOut: false,
+        token: spec.finalizeToken,
+      });
+    }
+  });
 
   test("buildExecSpec returns a launcher argv with Windows process containment by default", async () => {
     const handle = createMxcSandboxBackendHandle(baseParams);
@@ -1385,6 +1473,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     async (timeoutSeconds) => {
       const createBackend = createMxcSandboxBackendFactory(
         resolveConfig({ agents: { analyst: { network: "default", timeoutSeconds } } }),
+        configuredRoster,
       );
       const handle = await createBackend({
         agentId: "analyst",
@@ -1432,7 +1521,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         reviewer: { timeoutSeconds: 15, mxcPolicyPaths: [] },
       },
     });
-    const createBackend = createMxcSandboxBackendFactory(config);
+    const createBackend = createMxcSandboxBackendFactory(config, configuredRoster);
     const create = (agentId: string) =>
       createBackend({
         agentId,
@@ -1528,6 +1617,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
           analyst: { mxcPolicyPaths: [path.join(baseParams.workdir, "missing-policy.json")] },
         },
       }),
+      configuredRoster,
     );
     const params = {
       sessionKey: "agent:analyst:main",
@@ -1773,6 +1863,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
           timeoutSeconds: 120,
           agents: { analyst: { network: "none", timeoutSeconds: 7, mxcPolicyPaths: [] } },
         }),
+        configuredRoster,
       );
       const handle = await createBackend({
         agentId: "analyst",
@@ -1819,6 +1910,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
         resolveConfig({
           agents: { analyst: { network: "none", timeoutSeconds: 7, mxcPolicyPaths: [] } },
         }),
+        configuredRoster,
       );
       const handle = await createBackend({
         agentId: "analyst",
@@ -1841,7 +1933,7 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
   });
 
   test("factory rejects unsupported Docker bind mounts", async () => {
-    const createBackend = createMxcSandboxBackendFactory(baseConfig);
+    const createBackend = createMxcSandboxBackendFactory(baseConfig, configuredRoster);
     const cfg = createSandboxBackendTestConfig({
       workspaceAccess: "none",
       docker: {

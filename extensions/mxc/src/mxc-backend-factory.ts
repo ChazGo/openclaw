@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { CreateSandboxBackendParams, SandboxBackendHandle } from "openclaw/plugin-sdk/sandbox";
-import { resolveMxcAgentConfig, type MxcConfig } from "./config.js";
+import {
+  assertMxcAgentOverridesConfigured,
+  resolveMxcAgentConfig,
+  type MxcConfig,
+} from "./config.js";
 import { createMxcSandboxBackendHandle } from "./mxc-backend.js";
 
 function sanitizeRuntimeId(value: string): string {
@@ -17,10 +21,16 @@ function sanitizeRuntimeId(value: string): string {
   return `openclaw-mxc-${slug || "sandbox"}-${hash}`;
 }
 
+export type MxcSandboxBackendFactoryOptions = {
+  /** Read the live configured agent roster; called once per backend creation. */
+  listAgentIds: () => readonly string[];
+  assertRegistrationCurrent?: () => void;
+};
+
 /** Factory function called by OpenClaw when sandbox.backend=mxc. */
 export function createMxcSandboxBackendFactory(
   config: MxcConfig,
-  assertRegistrationCurrent?: () => void,
+  { listAgentIds, assertRegistrationCurrent }: MxcSandboxBackendFactoryOptions,
 ) {
   return async function createMxcSandboxBackend(
     params: CreateSandboxBackendParams,
@@ -31,6 +41,7 @@ export function createMxcSandboxBackendFactory(
       assertHostCurrent?.();
     };
     assertRuntimeCurrent();
+    assertMxcAgentOverridesConfigured(config, listAgentIds());
     const agentConfig = resolveMxcAgentConfig(config, params.agentId, params.cfg.scope);
     if ((params.cfg.docker.binds?.length ?? 0) > 0) {
       throw new Error("MXC sandbox backend does not support sandbox.docker.binds.");

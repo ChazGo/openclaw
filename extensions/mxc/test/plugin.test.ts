@@ -31,9 +31,16 @@ const {
     assertMxcReadinessMock: vi.fn<(params: { executablePath: string }) => void>(),
     warnMxcHostPrepIfNeededMock: vi.fn(),
     createMxcSandboxBackendFactoryMock: vi.fn(
-      (_config: unknown, _assertCurrent?: () => void) => async () => {
-        throw new Error("MXC provider must not run in registration tests");
-      },
+      (
+        _config: unknown,
+        _options: {
+          listAgentIds: () => readonly string[];
+          assertRegistrationCurrent?: () => void;
+        },
+      ) =>
+        async () => {
+          throw new Error("MXC provider must not run in registration tests");
+        },
     ),
     mxcSandboxBackendManagerMock: { describeRuntime: vi.fn(), removeRuntime: vi.fn() },
     resolveMxcBinaryPathMock: vi.fn(() => "mxc-test-binary"),
@@ -139,30 +146,23 @@ describe("registerMxcPlugin", () => {
     restoreProcessPlatformForTest();
   });
 
-  test("validates overrides against the configured roster before registering", () => {
+  test("registers without a roster check and reads the live roster for each backend", () => {
+    let live: OpenClawPluginApi["config"] = { agents: { entries: { other: {} } } };
     const { api } = createApi({ agents: { analyst: { network: "none" } } });
-    expect(() =>
-      registerMxcPlugin({ ...api, config: { agents: { entries: { analyst: {} } } } }),
-    ).not.toThrow();
-    createMxcSandboxBackendFactoryMock.mockClear();
-    expect(() =>
-      registerMxcPlugin({ ...api, config: { agents: { entries: { other: {} } } } }),
-    ).toThrow(/unknown agent ID "analyst"/);
-    expect(createMxcSandboxBackendFactoryMock).not.toHaveBeenCalled();
-  });
+    const runtime = { config: { current: () => live } } as unknown as OpenClawPluginApi["runtime"];
 
-  test("accepts canonical underscore-prefixed agents in the configured roster", () => {
-    const { api } = createApi({ agents: { _worker: { network: "none" } } });
-    expect(() =>
-      registerMxcPlugin({ ...api, config: { agents: { entries: { _worker: {} } } } }),
-    ).not.toThrow();
-  });
+    // The registration snapshot lacks "analyst"; validation belongs to backend creation.
+    expect(() => registerMxcPlugin({ ...api, config: live, runtime })).not.toThrow();
+    const options = createMxcSandboxBackendFactoryMock.mock.calls.at(-1)?.[1];
+    expect(options?.listAgentIds()).toEqual(["other"]);
 
-  test("uses implicit main only for an absent roster, never an explicit empty roster", () => {
-    const { api } = createApi({ agents: { main: {} } });
-    expect(() => registerMxcPlugin({ ...api, config: {} })).not.toThrow();
-    for (const config of [{ agents: { entries: {} } }, { agents: { list: [] } }]) {
-      expect(() => registerMxcPlugin({ ...api, config })).toThrow(/unknown agent ID "main"/);
+    live = { agents: { entries: { analyst: {}, _worker: {} } } };
+    expect(options?.listAgentIds()).toEqual(["analyst", "_worker"]);
+    live = {};
+    expect(options?.listAgentIds()).toEqual(["main"]);
+    for (const explicitEmpty of [{ agents: { entries: {} } }, { agents: { list: [] } }]) {
+      live = explicitEmpty;
+      expect(options?.listAgentIds()).toEqual([]);
     }
   });
 
@@ -212,9 +212,13 @@ describe("registerMxcPlugin", () => {
       expect.objectContaining({
         timeoutSeconds: 60,
       }),
-      expect.any(Function),
+      {
+        listAgentIds: expect.any(Function),
+        assertRegistrationCurrent: expect.any(Function),
+      },
     );
-    const assertCurrent = createMxcSandboxBackendFactoryMock.mock.calls.at(-1)?.[1];
+    const assertCurrent =
+      createMxcSandboxBackendFactoryMock.mock.calls.at(-1)?.[1].assertRegistrationCurrent;
     expect(assertCurrent).toBeTypeOf("function");
     expect(() => assertCurrent?.()).not.toThrow();
     expect(readBackend()).toEqual({

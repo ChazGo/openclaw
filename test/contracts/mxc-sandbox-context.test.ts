@@ -27,6 +27,8 @@ import type { LocalWorkspaceOwner } from "../../src/gateway/worker-environments/
 import type { SkillSnapshot } from "../../src/skills/types.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../src/state/openclaw-agent-db.js";
 
+const configuredRoster = { listAgentIds: () => ["main", "analyst", "reviewer", "other"] };
+
 const updateRegistryMock = vi.hoisted(() => vi.fn());
 const readRegisteredSandboxRuntimeIdsMock = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const syncSkillsToWorkspaceMock = vi.hoisted(() =>
@@ -143,7 +145,10 @@ describe("MXC sandbox context composition", () => {
       const replacement = prepare();
       const restore = registerSandboxBackend(
         "mxc",
-        createMxcSandboxBackendFactory(resolveConfig({ agents: { analyst: { network: "none" } } })),
+        createMxcSandboxBackendFactory(
+          resolveConfig({ agents: { analyst: { network: "none" } } }),
+          configuredRoster,
+        ),
       );
       try {
         const admitted = await owner.admit("embedded");
@@ -213,7 +218,7 @@ describe("MXC sandbox context composition", () => {
         timeoutSeconds: 120,
         agents: { analyst: { network: "none", timeoutSeconds: 7, mxcPolicyPaths: [] } },
       });
-      const factory = vi.fn(createMxcSandboxBackendFactory(mxcConfig));
+      const factory = vi.fn(createMxcSandboxBackendFactory(mxcConfig, configuredRoster));
       const resolveWorkdir = vi.fn((params: CreateSandboxBackendParams) => {
         expect(resolveMxcAgentConfig(mxcConfig, params.agentId, params.cfg.scope)).toMatchObject({
           network: "none",
@@ -331,6 +336,7 @@ describe("MXC sandbox context composition", () => {
       const factory = vi.fn(
         createMxcSandboxBackendFactory(
           resolveConfig({ agents: { analyst: { network: "none", timeoutSeconds: 7 } } }),
+          configuredRoster,
         ),
       );
       const resolveWorkdir = vi.fn(() => owner.worktree.path);

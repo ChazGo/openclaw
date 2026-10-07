@@ -351,8 +351,6 @@ export function loadOpenClawPluginsCore(
           : undefined,
         hasKind(manifest.kind, "memory") ? memorySlot : undefined,
         manifest.id === dreamingSidecar?.engineId ? dreamingSidecar : undefined,
-        // A registry cache miss alone is insufficient: reloads can retain or borrow records.
-        context.agentRosterKey,
         context.channelPluginLoadIntent,
         context.includeSetupOnlyChannelPlugins,
         context.forceSetupOnlyChannelPlugins,

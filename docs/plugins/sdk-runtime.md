@@ -380,8 +380,10 @@ remain unchanged.
 
 The field is optional in the SDK type for older callers. A backend requiring
 per-agent policy must reject missing context rather than silently using another
-agent's policy. Use `listAgentIds(api.config)` from
-`openclaw/plugin-sdk/agent-scope-runtime` for registration-time roster validation.
+agent's policy. Roster edits do not reload plugins, so validate per-agent
+references against the live roster when the backend is created, for example with
+`listAgentIds(api.runtime.config.current())` from
+`openclaw/plugin-sdk/agent-scope-runtime`, and fail closed on unknown IDs.
 Legacy implicit `main` applies only when the roster is absent, not explicitly
 empty. See [MXC policy configuration](/plugins/reference/mxc#per-agent-sandbox-policy).
 

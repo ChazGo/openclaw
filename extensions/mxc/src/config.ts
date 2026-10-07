@@ -174,6 +174,25 @@ export function resolveConfig(value: unknown): MxcConfig {
   return resolved;
 }
 
+/**
+ * Fail closed when any override names an agent absent from the live roster.
+ * Runs at backend creation so roster edits need no plugin reload; a removed or
+ * renamed agent blocks MXC until its stale override is fixed.
+ */
+export function assertMxcAgentOverridesConfigured(
+  config: MxcConfig,
+  configuredAgentIds: readonly string[],
+): void {
+  const known = new Set(configuredAgentIds);
+  for (const id of Object.keys(config.agents ?? {})) {
+    if (!known.has(id)) {
+      throw new Error(
+        `Invalid mxc plugin config: unknown agent ID "${id}"; configure the agent or remove plugins.entries.mxc.config.agents.${id}.`,
+      );
+    }
+  }
+}
+
 export function resolveMxcAgentConfig(
   config: MxcConfig,
   agentId: string | undefined,
