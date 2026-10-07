@@ -1,11 +1,15 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
+import { resolveMxcLauncherPath } from "./plugin-root.js";
+import { buildLauncherEnv } from "./windows-env.js";
 
-const MxcProbeOutputSchema = z.object({
-  tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
-  warnings: z.array(z.string()).default([]),
-  error: z.string().optional(),
+const MxcLauncherProbeSchema = z.object({
+  probe: z.object({
+    tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+    warnings: z.array(z.string()).default([]),
+    error: z.string().optional(),
+  }),
 });
 
 function resolveWindowsSystemExecutable(name: string): string {
@@ -13,25 +17,30 @@ function resolveWindowsSystemExecutable(name: string): string {
   return path.win32.join(systemRoot || "C:\\Windows", "System32", name);
 }
 
-// `wxc-exec --probe` can exit 0 even when detection fails; only a selected tier
-// means this host can run MXC sandboxes.
-function probeMxcIsolationTier(executablePath: string): { tier: string; warnings: string[] } {
+// The probe runs in the launcher, with the same pinned `mxc_ffi` that executes
+// commands. A probe can succeed without selecting a tier; only a selected and
+// admitted tier means this host can run MXC sandboxes.
+function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+  tier: string;
+  warnings: string[];
+} {
   const notReady = (reason: string, cause?: unknown) =>
     new Error(
       `[mxc] MXC Windows ProcessContainer sandbox is not ready: ${reason}. ` +
-        `Run "${executablePath}" --probe for host details. ` +
-        `The selected executor must be compatible with MXC 0.8.0 and support --probe. ` +
-        `If mxcBinaryPath points to an older executor, update it or unset ` +
-        `plugins.entries.mxc.config.mxcBinaryPath and restart the Gateway to use ` +
-        `the bundled SDK executor.`,
+        `The plugin probes the host through @microsoft/mxc-sdk 1.0 with the native ` +
+        `components in ${nativeEnv.MXC_FFI_DIR}. If mxcBinaryPath is set, it must point ` +
+        `to an MXC 1.0 release layout; otherwise unset ` +
+        `plugins.entries.mxc.config.mxcBinaryPath and restart the Gateway to use the ` +
+        `bundled SDK components.`,
       cause === undefined ? undefined : { cause },
     );
   let output: string;
   try {
-    output = execFileSync(executablePath, ["--probe"], {
+    output = execFileSync(process.execPath, [resolveMxcLauncherPath(), "--probe"], {
       encoding: "utf-8",
+      env: buildLauncherEnv(nativeEnv),
       stdio: "pipe",
-      timeout: 15_000,
+      timeout: 30_000,
       windowsHide: true,
     });
   } catch (error) {
@@ -44,16 +53,16 @@ function probeMxcIsolationTier(executablePath: string): { tier: string; warnings
   } catch (error) {
     throw notReady("the MXC host check did not return JSON", error);
   }
-  const parsed = MxcProbeOutputSchema.safeParse(probe);
+  const parsed = MxcLauncherProbeSchema.safeParse(probe);
   if (!parsed.success) {
     throw notReady("the MXC host check returned an unexpected result", parsed.error);
   }
-  const { tier, warnings, error } = parsed.data;
-  if (!tier) {
-    const reason = error || "the check reported no isolation tier";
+  const { probe: result } = parsed.data;
+  if (!result.tier) {
+    const reason = result.error || "the check reported no isolation tier";
     throw notReady(`MXC cannot select an isolation tier on this host (${reason})`);
   }
-  return { tier, warnings };
+  return { tier: result.tier, warnings: result.warnings };
 }
 
 // AppContainer processes need directory-traversal/list rights on the system
@@ -108,15 +117,15 @@ export function warnMxcHostPrepIfNeeded(): void {
 }
 
 /**
- * Fails plugin activation unless MXC's host probe selects an isolation tier for
- * `executablePath`. Degradation warnings from the probe are reported but do not
- * block activation.
+ * Fails plugin activation unless MXC's host probe, run with the pinned native
+ * components, selects an admitted isolation tier. Degradation warnings from the
+ * probe are reported but do not block activation.
  */
-export function assertMxcReadiness(params: { executablePath: string }): void {
+export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
   if (process.platform !== "win32") {
     return;
   }
-  const probe = probeMxcIsolationTier(params.executablePath);
+  const probe = probeMxcIsolationTier(params.nativeEnv);
   if (probe.warnings.length > 0) {
     console.warn(
       `[mxc] MXC sandbox is using the ${probe.tier} isolation tier: ${probe.warnings.join("; ")}`,

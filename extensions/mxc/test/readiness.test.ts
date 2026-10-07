@@ -26,19 +26,27 @@ const SYSTEM32 = path.win32.join(
   "System32",
 );
 const ICACLS = path.win32.join(SYSTEM32, "icacls.exe");
-const MXC_EXE = "C:\\mxc\\bin\\x64\\wxc-exec.exe";
+const NATIVE_ENV = { MXC_BIN_DIR: "C:\\mxc\\bin", MXC_FFI_DIR: "C:\\mxc\\bin\\x64" };
 
 function probeOutput(result: Record<string, unknown>): string {
-  return JSON.stringify({ warnings: [], probes: {}, ...result });
+  return JSON.stringify({ probe: { warnings: [], probes: {}, ...result } });
 }
 
-// The fake has no sc.exe: only the selected MXC executable answers --probe.
+// Only the plugin launcher, run with the pinned native environment, answers --probe.
 function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } = {}) {
   const probe = params.probe ?? probeOutput({ tier: "base-container" });
   const systemDriveAcl =
     params.systemDriveAcl ?? "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n    S-1-15-2-1:(R)\n";
-  const exec = vi.mocked(execFileSync).mockImplementation((command, args = []) => {
-    if (command === MXC_EXE && args[0] === "--probe") {
+  const exec = vi.mocked(execFileSync).mockImplementation((command, args = [], options) => {
+    if (
+      command === process.execPath &&
+      String(args[0]).endsWith("mxc-spawn-launcher.mjs") &&
+      args[1] === "--probe"
+    ) {
+      const env = (options as { env?: Record<string, string> } | undefined)?.env;
+      if (env?.MXC_FFI_DIR !== NATIVE_ENV.MXC_FFI_DIR || env.MXC_BIN_DIR !== NATIVE_ENV.MXC_BIN_DIR) {
+        throw new Error("probe ran without the pinned native environment");
+      }
       if (probe instanceof Error) {
         throw probe;
       }
@@ -57,34 +65,31 @@ describe("assertMxcReadiness", () => {
     setPlatform("linux");
     const exec = mockProbe({ probe: new Error("probe must not run") });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
     expect(exec).not.toHaveBeenCalled();
   });
 
-  test.each(["base-container", "appcontainer-bfs", "appcontainer-dacl"])(
-    "accepts a host where MXC selects the %s tier",
-    (tier) => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      mockProbe({ probe: probeOutput({ tier }) });
+  test("accepts a host where MXC selects an admitted tier", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockProbe({ probe: probeOutput({ tier: "base-container" }) });
 
-      expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
-      expect(warn).not.toHaveBeenCalled();
-    },
-  );
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
+    expect(warn).not.toHaveBeenCalled();
+  });
 
   test("reports MXC tier degradation warnings without blocking activation", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockProbe({
       probe: probeOutput({
-        tier: "appcontainer-dacl",
-        warnings: ["BaseContainer API is not present on this host"],
+        tier: "base-container",
+        warnings: ["DACL deny augmentation is unavailable"],
       }),
     });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
     expect(warn).toHaveBeenCalledOnce();
     expect(warn.mock.calls[0]?.[0]).toMatch(
-      /appcontainer-dacl isolation tier: BaseContainer API is not present/u,
+      /base-container isolation tier: DACL deny augmentation is unavailable/u,
     );
   });
 
@@ -95,8 +100,8 @@ describe("assertMxcReadiness", () => {
       }),
     });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
-      /cannot select an isolation tier on this host \(DACL fallback required.*--probe for host details/u,
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+      /cannot select an isolation tier on this host \(DACL fallback required.*MXC 1\.0 release layout/u,
     );
   });
 
@@ -105,41 +110,41 @@ describe("assertMxcReadiness", () => {
       probe: probeOutput({ tier: "none", error: "isolation unavailable" }),
     });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
-      /host check returned an unexpected result.*--probe for host details/u,
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+      /host check returned an unexpected result/u,
     );
   });
 
   test("rejects hosts where the MXC probe cannot run", () => {
-    mockProbe({ probe: new Error("Command failed: wxc-exec.exe --probe") });
+    mockProbe({ probe: new Error("Command failed: mxc-spawn-launcher.mjs --probe") });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
-      /host check failed: Command failed.*older executor.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+      /host check failed: Command failed.*C:\\mxc\\bin\\x64.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
     );
   });
 
   test("rejects a probe that does not report JSON", () => {
-    mockProbe({ probe: "wxc-exec: unknown option --probe" });
+    mockProbe({ probe: "Error: MXC native component is missing" });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
-      /host check did not return JSON.*older executor.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+      /host check did not return JSON.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
     );
   });
 
-  test("probes the configured executor instead of another MXC binary", () => {
+  test("probes with the configured native components", () => {
     mockProbe();
 
     expect(() =>
       assertMxcReadiness({
-        executablePath: "C:\\override\\wxc-exec.exe",
+        nativeEnv: { MXC_BIN_DIR: "C:\\override", MXC_FFI_DIR: "C:\\override\\x64" },
       }),
-    ).toThrow(/host check failed: spawn C:\\override\\wxc-exec\.exe ENOENT/u);
+    ).toThrow(/host check failed: probe ran without the pinned native environment/u);
   });
 
   test("does not gate activation on system-drive preparation", () => {
     mockProbe({ systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n" });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
+    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
   });
 });
 
