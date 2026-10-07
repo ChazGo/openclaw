@@ -102,6 +102,8 @@ const REVIEWED_DEPENDENCY_FINDING_LIMITS = new Map<string, number>([
   ["dangerous-exec:node_modules/node-addon-api/tools/check-napi.js", 1],
   ["dangerous-exec:node_modules/node-addon-api/tools/clang-format.js", 1],
   ["dangerous-exec:node_modules/node-addon-api/tools/eslint-format.js", 3],
+  ["dangerous-exec:node_modules/node-pty/scripts/gen-compile-commands.js", 1],
+  ["dangerous-exec:node_modules/node-pty/scripts/increment-version.js", 2],
   ["dangerous-exec:node_modules/playwright-core/lib/coreBundle.js", 3],
   ["dangerous-exec:node_modules/playwright-core/lib/utilsBundle.js", 10],
   ["dangerous-exec:node_modules/prism-media/src/core/FFmpeg.js", 2],
