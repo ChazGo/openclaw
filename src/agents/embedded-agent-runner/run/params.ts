@@ -141,6 +141,8 @@ export type RunEmbeddedAgentParams = {
   enableHeartbeatTool?: boolean;
   /** Keep the heartbeat response tool available even when a narrow profile would omit it. */
   forceHeartbeatTool?: boolean;
+  /** Heartbeat-transported turn that continues a conversation (its own command completion). */
+  continuesConversation?: boolean;
   /** Allow runtime plugins for this run to late-bind the gateway subagent. */
   allowGatewaySubagentBinding?: boolean;
   /** @deprecated Use sessionTarget plus sessionId/sessionKey/agentId for runtime identity. */
@@ -217,7 +219,7 @@ export type RunEmbeddedAgentParams = {
   execApprovalContinuationTranscriptPromptRange?: ExecApprovalContinuationPromptRange;
   /** Trusted runtime-only authorization for one bounded cross-conversation recall pass. */
   conversationRecall?: ConversationRecallContext;
-  onExecutionStarted?: (info?: { lifecycleGeneration?: string }) => unknown;
+  onExecutionStarted?: (info?: { lifecycleGeneration?: string; backend?: string }) => unknown;
   onExecutionPhase?: (info: {
     phase: EmbeddedAgentExecutionPhase;
     provider?: string;
@@ -313,39 +315,17 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "sandboxAgentId"
   | "promptCacheKey"
   | "reasoningLevel"
-  | "messageChannel"
-  | "messageProvider"
   | "clientCaps"
   | "gatewayUiCommandTarget"
   | "toolBindings"
-  | "chatType"
-  | "agentAccountId"
   | "trigger"
   | "messageTo"
   | "messageThreadId"
   | "conversationToolPolicy"
-  | "groupId"
-  | "groupChannel"
-  | "groupSpace"
   | "memberRoleIds"
-  | "messageActionTurnCapability"
-  | "spawnedBy"
   | "isCanonicalWorkspace"
-  | "senderId"
-  | "senderName"
-  | "senderUsername"
-  | "senderE164"
-  | "senderIsOwner"
-  | "approvalReviewerDeviceId"
-  | "currentChannelId"
   | "chatId"
-  | "channelContext"
   | "currentMessagingTarget"
-  | "currentThreadTs"
-  | "currentMessageId"
-  | "currentInboundAudio"
-  | "replyToMode"
-  | "requireExplicitMessageTarget"
   | "disableMessageTool"
   | "conversationRecall"
   | "toolOverrides"
@@ -360,11 +340,10 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "forceMessageTool"
   | "enableHeartbeatTool"
   | "forceHeartbeatTool"
+  | "continuesConversation"
   | "allowGatewaySubagentBinding"
   | "extraSystemPrompt"
   | "gitCoauthorPrompt"
-  | "sourceReplyDeliveryMode"
-  | "taskSuggestionDeliveryMode"
   | "silentReplyPromptMode"
   | "ownerNumbers"
   | "toolsAllow"
@@ -373,12 +352,14 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "scheduledToolPolicy"
   | "modelThinkingCapability"
   | "modelFallbacksOverride"
-> & {
-  /** SDK observation of the completed attempt; new runs recheck publication availability. */
-  githubPublicationAvailable?: boolean;
-  agentId: string;
-  workspaceDir: string;
-  cwd?: string;
-  sandboxSessionKey: string;
-  cronCreatorCallerOrigin?: CronScheduledToolCallerOrigin;
-};
+> &
+  AgentRunMessageContext &
+  AgentRunChannelContext & {
+    /** SDK observation of the completed attempt; new runs recheck publication availability. */
+    githubPublicationAvailable?: boolean;
+    agentId: string;
+    workspaceDir: string;
+    cwd?: string;
+    sandboxSessionKey: string;
+    cronCreatorCallerOrigin?: CronScheduledToolCallerOrigin;
+  };

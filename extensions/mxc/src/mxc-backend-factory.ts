@@ -27,7 +27,6 @@ export type MxcSandboxBackendFactoryOptions = {
   assertRegistrationCurrent?: () => void;
 };
 
-/** Factory function called by OpenClaw when sandbox.backend=mxc. */
 export function createMxcSandboxBackendFactory(
   config: MxcConfig,
   { listAgentIds, assertRegistrationCurrent }: MxcSandboxBackendFactoryOptions,

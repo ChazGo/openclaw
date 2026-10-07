@@ -58,7 +58,11 @@ import type {
   OpenClawStateDatabaseLifecycleEvent,
   StateDatabaseHandle,
 } from "./openclaw-state-db-contract.js";
-import { closeTrackedStateDatabase } from "./openclaw-state-db-handle.js";
+import {
+  closeTrackedStateDatabase,
+  readTrackedStateDatabaseIdentity,
+} from "./openclaw-state-db-handle.js";
+import { invalidateOpenClawStateRuntimeIntegrity } from "./openclaw-state-db-integrity-admission.js";
 import { assertExistingOpenClawStateSchemaCacheAdmission } from "./openclaw-state-db-schema-policy.js";
 import { openClawStateSnapshotOwners } from "./openclaw-state-db-snapshot-owner.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
@@ -297,6 +301,7 @@ function closeOpenClawStateDatabaseHandle(
 }
 
 function evictCachedOpenClawStateDatabase(database: OpenClawStateDatabase): boolean {
+  invalidateOpenClawStateRuntimeIntegrity(database.db);
   if (cachedDatabases.get(database.path) !== database) {
     return false;
   }
@@ -327,7 +332,8 @@ function publishOpenClawStateDatabase(
   const { db, path: pathname } = database;
   const schemaFacts = cacheAdmission.initialize(database);
   const { identity, admission } = asyncResources.publish(pathname);
-  databaseIdentities.set(db, identity);
+  // Lifecycle settlement retains this projection after native disposal clears its identity.
+  databaseIdentities.set(db, readTrackedStateDatabaseIdentity(db) ?? identity);
   cachedDatabases.set(pathname, Object.assign(database, { schemaFacts }));
   registerStateDatabaseWalAdmission(database, identity, admission, env);
   touchStateDatabase(database);
@@ -344,10 +350,16 @@ function publishOpenClawStateDatabase(
   return database;
 }
 
-function getCachedOpenClawStateDatabase(
+function getCachedOpenClawStateDatabase(pathname: string, options?: { readOnly: true }) {
+  return withCachedOpenClawStateDatabase(pathname, options, (database) => database);
+}
+
+/** Keep the admitted revision live while a synchronous reader consumes its row facts. */
+function withCachedOpenClawStateDatabase<T>(
   pathname: string,
-  options?: { readOnly: true },
-): OpenClawStateDatabase | undefined {
+  options: { readOnly: true } | undefined,
+  operation: (database: OpenClawStateDatabase) => T,
+): T | undefined {
   const maintenance = getOpenClawDatabaseMaintenanceScope();
   if (options?.readOnly) {
     maintenance?.assertReadAdmission();
@@ -359,17 +371,13 @@ function getCachedOpenClawStateDatabase(
   if (runtimeFailure) {
     throw runtimeFailure;
   }
-  const database = cachedDatabases.get(path.resolve(pathname));
-  if (database?.db.isOpen && !cacheAdmission.refresh(database)) {
-    return undefined;
-  }
-  if (database && borrowers.get(database.db)?.retiring) {
-    throw new Error(`OpenClaw state database native borrower cleanup is pending: ${pathname}`);
-  }
-  if (database) {
+  return cacheAdmission.read(path.resolve(pathname), (database) => {
+    if (borrowers.get(database.db)?.retiring) {
+      throw new Error(`OpenClaw state database native borrower cleanup is pending: ${pathname}`);
+    }
     touchStateDatabase(database);
-  }
-  return database;
+    return operation(database);
+  });
 }
 
 function getOpenClawStateDatabaseIfOpenAtPath(pathname: string): OpenClawStateDatabase | undefined {
@@ -587,6 +595,8 @@ export function registerOpenClawStateDatabaseAsyncResource(
 /** Capture the canonical read generation before any asynchronous worker admission. */
 export const captureOpenClawStateDatabaseReadAdmission = asyncResources.capture;
 
+export const captureOpenClawStateIntegrityAdmission = asyncResources.integrity;
+
 /** Bind worker-created storage to its captured admission without publishing a native handle. */
 export function publishOpenClawStateDatabaseWorkerAdmission(
   admission: OpenClawStateDatabaseReadAdmission,
@@ -649,6 +659,7 @@ export const openClawStateDatabaseCache = {
   evictCachedOpenClawStateDatabase,
   evictOpenClawStateDatabaseAfterCorruption,
   getCachedOpenClawStateDatabase,
+  withCachedOpenClawStateDatabase,
   getOpenClawStateDatabaseRecordedFailure: terminalOpenLatch.peek,
   getOpenClawStateDatabaseIfOpenAtPath,
   getKnownOpenClawStateDatabaseIdentity: asyncResources.knownIdentity,

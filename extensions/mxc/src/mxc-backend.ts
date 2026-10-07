@@ -115,7 +115,7 @@ function createMxcLauncherPayload(
   const payloadJson = JSON.stringify({
     config: payload,
     options: {
-      debug: config.debug ?? false,
+      debug: config.debug,
       executablePath: resolveMxcBinaryPath(config.mxcBinaryPath),
       ...(!usePty ? { usePty: false } : {}),
     },
@@ -133,9 +133,6 @@ function createMxcLauncherPayload(
   return { payloadDir, payloadFile, sandboxTempDir };
 }
 
-/**
- * Creates a SandboxBackendHandle for a specific session.
- */
 export function createMxcSandboxBackendHandle(params: {
   config: MxcConfig;
   assertRuntimeCurrent?: () => void;
@@ -173,8 +170,7 @@ export function createMxcSandboxBackendHandle(params: {
         params.workdir,
         workdir ?? params.workdir,
       );
-      const workspaceAccess = params.workspaceAccess ?? "rw";
-      const workspace = resolveMxcWorkspaceContext({ ...params, workspaceAccess });
+      const workspace = resolveMxcWorkspaceContext(params);
       const runtimeWorkdir = resolveMxcRuntimeWorkdir(workspace, effectiveWorkdir);
       const baselineContext = resolveCurrentBaselineContext(workspace.activeWorkspaceDir);
       const sandboxTempDir = createSandboxTempDir(baselineContext.hostEnv);
@@ -247,8 +243,7 @@ export function createMxcSandboxBackendHandle(params: {
         timeoutSecondsConfigured: true,
       };
       const effectiveWorkdir = path.resolve(params.workdir);
-      const workspaceAccess = params.workspaceAccess ?? "rw";
-      const workspace = resolveMxcWorkspaceContext({ ...params, workspaceAccess });
+      const workspace = resolveMxcWorkspaceContext(params);
       const runtimeWorkdir = resolveMxcRuntimeWorkdir(workspace, effectiveWorkdir);
       const baselineContext = resolveCurrentBaselineContext(workspace.activeWorkspaceDir);
       const sandboxTempDir = createSandboxTempDir(baselineContext.hostEnv);
