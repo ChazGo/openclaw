@@ -98,6 +98,9 @@ help stay in sync with plugin runtime validation.
   ([microsoft/mxc#626](https://github.com/microsoft/mxc/issues/626)).
 - A command stopped by the configured timeout exits with status `124` and
   writes `MXC sandbox command timed out and was terminated.` to stderr.
+- On AppContainer isolation tiers, MXC SDK 1.0 runs commands in a regular
+  AppContainer rather than LPAC; see
+  [Isolation tiers under SDK 1.0](#isolation-tiers-under-sdk-10).
 
 ## Not supported yet
 
@@ -268,6 +271,21 @@ check (`probe()` from `@microsoft/mxc-sdk/v1`) through its Node launcher, with
 the same pinned native components it launches commands with, including an
 `mxcBinaryPath` override. The check must select an isolation tier. MXC's tier
 degradation warnings are logged but do not block activation.
+
+### Isolation tiers under SDK 1.0
+
+MXC picks the isolation tier for the host; the plugin does not choose it.
+MXC SDK 1.0 cannot request a least-privilege AppContainer (LPAC), which the
+SDK 0.8 integration always requested, so this plugin accepts the weaker
+isolation MXC SDK 1.0 provides on the AppContainer tiers:
+
+| Tier | Hosts where it was observed | Change from SDK 0.8 |
+| --- | --- | --- |
+| `appcontainer-dacl`, `appcontainer-bfs` | Windows builds 22631, 26100, and 26200 selected `appcontainer-dacl` | Commands run in a regular AppContainer instead of LPAC. They can reach files, registry keys, and other resources granted to `ALL APPLICATION PACKAGES` that an LPAC process could not. |
+| `base-container` | Windows builds 26600 and later with the process security environment API | None. `base-container` is a different isolation model without an LPAC token in either SDK version. |
+
+On an AppContainer tier the plugin logs a notice naming the tier when it
+activates. It does not block activation.
 
 ### Native component overrides
 

@@ -69,13 +69,31 @@ describe("assertMxcReadiness", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  test("accepts a host where MXC selects an admitted tier", () => {
+  test("accepts a base-container host without an isolation notice", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     mockProbe({ probe: probeOutput({ tier: "base-container" }) });
 
     expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
     expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
   });
+
+  test.each(["appcontainer-dacl", "appcontainer-bfs"])(
+    "accepts the %s tier and discloses that it runs without LPAC",
+    (tier) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      mockProbe({ probe: probeOutput({ tier }) });
+
+      expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledOnce();
+      expect(info.mock.calls[0]?.[0]).toMatch(
+        new RegExp(`${tier} isolation tier.*regular AppContainer.*ALL APPLICATION PACKAGES`, "u"),
+      );
+    },
+  );
 
   test("reports MXC tier degradation warnings without blocking activation", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

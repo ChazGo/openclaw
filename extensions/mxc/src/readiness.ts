@@ -116,16 +116,30 @@ export function warnMxcHostPrepIfNeeded(): void {
   }
 }
 
+// SDK 0.8 requested a least-privilege AppContainer (LPAC); SDK 1.0 cannot, so
+// the AppContainer tiers now run a regular AppContainer. base-container has no
+// LPAC token in either version and is unaffected.
+function appContainerTierNotice(tier: string): string {
+  return (
+    `[mxc] MXC selected the ${tier} isolation tier. With MXC SDK 1.0 this tier runs ` +
+    `sandboxed commands in a regular AppContainer, not a least-privilege AppContainer ` +
+    `(LPAC), so they can reach resources granted to ALL APPLICATION PACKAGES.`
+  );
+}
+
 /**
  * Fails plugin activation unless MXC's host probe, run with the pinned native
- * components, selects an admitted isolation tier. Degradation warnings from the
- * probe are reported but do not block activation.
+ * components, selects an isolation tier. The AppContainer-tier isolation notice
+ * and the probe's degradation warnings are reported but do not block activation.
  */
 export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
   if (process.platform !== "win32") {
     return;
   }
   const probe = probeMxcIsolationTier(params.nativeEnv);
+  if (probe.tier !== "base-container") {
+    console.info(appContainerTierNotice(probe.tier));
+  }
   if (probe.warnings.length > 0) {
     console.warn(
       `[mxc] MXC sandbox is using the ${probe.tier} isolation tier: ${probe.warnings.join("; ")}`,

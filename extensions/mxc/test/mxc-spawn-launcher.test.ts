@@ -12,7 +12,6 @@ const launcherPath = path.resolve(
   "../src/mxc-spawn-launcher.mjs",
 );
 
-type ProbeResult = { tier?: string; error?: string };
 type WaitResult = { exitCode: number; timedOut: boolean };
 type FakeProcess = {
   standardInput?: Writable | null;
@@ -43,7 +42,6 @@ const loadLauncher = () =>
     }) => Signals;
     launchSandbox: (
       sdk: {
-        probe: (request: unknown) => ProbeResult;
         spawn: (request: unknown) => Promise<FakeProcess>;
         spawnWithPty: (request: unknown) => Promise<FakeProcess>;
       },
@@ -78,7 +76,6 @@ function endedStream(text: string): PassThrough {
 }
 
 const attachOnly: Signals = { attach: () => {} };
-const baseContainerProbe = () => ({ tier: "base-container" });
 
 describe("mxc-spawn-launcher", () => {
   it("decodes a JSON --payload-file and removes it before spawning", () => {
@@ -154,7 +151,7 @@ describe("mxc-spawn-launcher", () => {
     const spawnWithPty = vi.fn();
 
     const result = launchSandbox(
-      { probe: baseContainerProbe, spawn, spawnWithPty },
+      { spawn, spawnWithPty },
       {},
       { pty: false },
       attachOnly,
@@ -192,7 +189,7 @@ describe("mxc-spawn-launcher", () => {
     const spawn = vi.fn();
 
     const result = launchSandbox(
-      { probe: baseContainerProbe, spawn, spawnWithPty },
+      { spawn, spawnWithPty },
       {},
       { pty: true },
       attachOnly,
@@ -219,7 +216,7 @@ describe("mxc-spawn-launcher", () => {
     };
 
     const code = await launchSandbox(
-      { probe: baseContainerProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+      { spawn: async () => spawned, spawnWithPty: vi.fn() },
       {},
       {},
       attachOnly,
