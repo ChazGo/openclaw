@@ -193,9 +193,9 @@ describe("mxc-spawn-launcher", () => {
       nativeLibraryPath,
       executorPath,
     });
-    expect(() =>
-      assertPinnedNativeComponents(env, (file) => file !== nativeLibraryPath),
-    ).toThrow(/mxc_ffi\.dll/u);
+    expect(() => assertPinnedNativeComponents(env, (file) => file !== nativeLibraryPath)).toThrow(
+      /mxc_ffi\.dll/u,
+    );
     expect(() => assertPinnedNativeComponents(env, (file) => file !== executorPath)).toThrow(
       /wxc-exec\.exe/u,
     );
@@ -224,13 +224,7 @@ describe("mxc-spawn-launcher", () => {
     const spawn = vi.fn(async () => spawned);
     const spawnWithPty = vi.fn();
 
-    const result = launchSandbox(
-      { spawn, spawnWithPty },
-      {},
-      { pty: false },
-      attachOnly,
-      io,
-    );
+    const result = launchSandbox({ spawn, spawnWithPty }, {}, { pty: false }, attachOnly, io);
     await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
     io.stdin.end("input");
 
@@ -262,13 +256,7 @@ describe("mxc-spawn-launcher", () => {
     const spawnWithPty = vi.fn(async () => spawned);
     const spawn = vi.fn();
 
-    const result = launchSandbox(
-      { spawn, spawnWithPty },
-      {},
-      { pty: true },
-      attachOnly,
-      io,
-    );
+    const result = launchSandbox({ spawn, spawnWithPty }, {}, { pty: true }, attachOnly, io);
     await vi.waitFor(() => expect(spawnWithPty).toHaveBeenCalled());
     io.stdin.end("dir\r");
 

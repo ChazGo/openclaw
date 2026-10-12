@@ -318,9 +318,7 @@ async function probeMain() {
   assertPinnedNativeComponents();
   const { probe } = await loadSdk();
   const output = probe();
-  process.stdout.write(
-    `${JSON.stringify({ probe: output })}\n`,
-  );
+  process.stdout.write(`${JSON.stringify({ probe: output })}\n`);
   return 0;
 }
 
