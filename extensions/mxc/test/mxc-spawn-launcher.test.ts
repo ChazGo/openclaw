@@ -26,8 +26,13 @@ type FakeProcess = {
 type Io = { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough };
 type Signals = {
   attach: (spawned: unknown) => void;
+  signaled: () => boolean;
   exitCode: () => number | undefined;
   dispose: () => void;
+};
+type FakeTimers = {
+  setTimeout: (callback: () => void, ms: number) => unknown;
+  clearTimeout: (timer: unknown) => void;
 };
 
 const loadLauncher = () =>
@@ -54,7 +59,9 @@ const loadLauncher = () =>
       options: { pty?: boolean; debug?: boolean },
       signals: Signals | undefined,
       io: Io,
+      timers?: FakeTimers,
     ) => Promise<number>;
+    PTY_EXECUTOR_BACKSTOP_MS: number;
     signalExitCode: (signal: number | string | undefined) => number;
   };
 
@@ -80,7 +87,69 @@ function endedStream(text: string): PassThrough {
   return stream;
 }
 
-const attachOnly: Signals = { attach: () => {}, exitCode: () => undefined, dispose: () => {} };
+const attachOnly: Signals = {
+  attach: () => {},
+  signaled: () => false,
+  exitCode: () => undefined,
+  dispose: () => {},
+};
+
+function createTimers() {
+  const pending: Array<{ callback: () => void; ms: number; cleared: boolean }> = [];
+  const timers: FakeTimers = {
+    setTimeout: (callback, ms) => {
+      const timer = { callback, ms, cleared: false };
+      pending.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      (timer as { cleared: boolean }).cleared = true;
+    },
+  };
+  return { timers, pending };
+}
+
+// A PTY sandbox whose wait() settles only when the test (or a kill) finishes it.
+function createPtyProcess() {
+  let finish: (result: WaitResult) => void = () => {};
+  const output = new PassThrough();
+  const kill = vi.fn();
+  const spawned: FakeProcess = {
+    input: new PassThrough(),
+    output,
+    wait: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    kill,
+  };
+  return {
+    spawned,
+    kill,
+    finish: (result: WaitResult) => {
+      output.end();
+      finish(result);
+    },
+  };
+}
+
+async function startPtyLaunch(request: { timeoutMs?: number }, signals: Signals = attachOnly) {
+  const { launchSandbox } = loadLauncher();
+  const io = createIo();
+  const { timers, pending } = createTimers();
+  const { spawned, kill, finish } = createPtyProcess();
+  const spawnWithPty = vi.fn(async (_request: unknown) => spawned);
+  const result = launchSandbox(
+    { spawn: vi.fn(), spawnWithPty },
+    request,
+    { pty: true },
+    signals,
+    io,
+    timers,
+  );
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  return { result, io, pending, kill, finish, spawnWithPty };
+}
 
 describe("mxc-spawn-launcher", () => {
   it("decodes a JSON --payload-file and removes it before spawning", () => {
@@ -233,6 +302,106 @@ describe("mxc-spawn-launcher", () => {
     expect(io.read(io.stderr)).toMatch(/timed out/u);
   });
 
+  it("kills a running PTY sandbox at its deadline and reports 124", async () => {
+    const { PTY_EXECUTOR_BACKSTOP_MS } = loadLauncher();
+    const { result, io, pending, kill, finish, spawnWithPty } = await startPtyLaunch({
+      timeoutMs: 30_000,
+    });
+
+    expect(pending[0]?.ms).toBe(30_000);
+    expect(spawnWithPty.mock.calls[0]?.[0]).toEqual({
+      timeoutMs: 30_000 + PTY_EXECUTOR_BACKSTOP_MS,
+    });
+    pending[0]?.callback();
+    expect(kill).toHaveBeenCalledTimes(1);
+    // node-pty reports the executor's killed or timed-out status as -1, never timedOut.
+    finish({ exitCode: -1, timedOut: false });
+
+    await expect(result).resolves.toBe(124);
+    expect(io.read(io.stderr)).toMatch(/timed out/u);
+  });
+
+  it("reports a PTY exit of -1 before the deadline as the command status", async () => {
+    const { result, io, pending, kill, finish } = await startPtyLaunch({ timeoutMs: 30_000 });
+
+    finish({ exitCode: -1, timedOut: false });
+
+    await expect(result).resolves.toBe(-1);
+    expect(pending[0]?.cleared).toBe(true);
+    expect(kill).not.toHaveBeenCalled();
+    expect(io.read(io.stderr)).toBe("");
+  });
+
+  it("ignores a PTY deadline that fires after completion was observed", async () => {
+    const { result, io, pending, kill, finish } = await startPtyLaunch({ timeoutMs: 30_000 });
+
+    finish({ exitCode: 3, timedOut: false });
+    await expect(result).resolves.toBe(3);
+    pending[0]?.callback();
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(io.read(io.stderr)).toBe("");
+  });
+
+  it("does not report a timeout after a signal cancelled the PTY sandbox", async () => {
+    const forced: { code?: number } = {};
+    const signals: Signals = {
+      attach: () => {},
+      signaled: () => true,
+      exitCode: () => forced.code,
+      dispose: () => {},
+    };
+    const { result, io, pending, kill, finish } = await startPtyLaunch(
+      { timeoutMs: 30_000 },
+      signals,
+    );
+
+    pending[0]?.callback();
+    expect(kill).not.toHaveBeenCalled();
+    forced.code = 143;
+    finish({ exitCode: -1, timedOut: false });
+
+    await expect(result).resolves.toBe(143);
+    expect(io.read(io.stderr)).toBe("");
+  });
+
+  it("keeps the forced signal status when a signal follows the PTY deadline", async () => {
+    const forced: { code?: number } = {};
+    const signals: Signals = {
+      attach: () => {},
+      signaled: () => false,
+      exitCode: () => forced.code,
+      dispose: () => {},
+    };
+    const { result, pending, finish } = await startPtyLaunch({ timeoutMs: 30_000 }, signals);
+
+    pending[0]?.callback();
+    forced.code = 130;
+    finish({ exitCode: -1, timedOut: false });
+
+    await expect(result).resolves.toBe(130);
+  });
+
+  it("leaves requests without a PTY deadline unchanged", async () => {
+    const { launchSandbox } = loadLauncher();
+    const { timers, pending } = createTimers();
+    const request = { timeoutMs: 30_000 };
+    const spawned: FakeProcess = {
+      standardInput: null,
+      standardOutput: endedStream(""),
+      standardError: endedStream(""),
+      wait: async () => ({ exitCode: -1, timedOut: false }),
+      kill: vi.fn(),
+    };
+    const spawn = vi.fn(async (_request: unknown) => spawned);
+
+    await expect(
+      launchSandbox({ spawn, spawnWithPty: vi.fn() }, request, {}, attachOnly, createIo(), timers),
+    ).resolves.toBe(-1);
+    expect(spawn.mock.calls[0]?.[0]).toBe(request);
+    expect(pending).toHaveLength(0);
+  });
+
   it("kills a sandbox that finishes spawning after a forwarded signal without exiting", () => {
     const { forwardSignals } = loadLauncher();
     const handlers = new Map<string, () => void>();
@@ -255,6 +424,7 @@ describe("mxc-spawn-launcher", () => {
     });
 
     handlers.get("SIGTERM")?.();
+    expect(signals.signaled()).toBe(true);
     const spawned = { kill: vi.fn() };
     signals.attach(spawned);
     handlers.get("SIGINT")?.();

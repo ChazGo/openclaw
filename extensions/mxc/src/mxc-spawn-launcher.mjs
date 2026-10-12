@@ -115,6 +115,7 @@ export function forwardSignals(options = {}) {
         killTarget();
       }
     },
+    signaled: () => pendingKill,
     exitCode: () => forcedExitCode,
     dispose() {
       if (exitTimer) {
@@ -173,7 +174,7 @@ function forwardInput(stdin, input, onEnd) {
  * Bridges a spawned process to the launcher's stdio and resolves with the exit
  * status the launcher should report.
  */
-export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo()) {
+export async function bridgeProcess(spawned, { pty, debug }, io, deadline) {
   let outputs;
   let disposeInput;
   if (pty) {
@@ -189,6 +190,8 @@ export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo
   let result;
   try {
     result = await spawned.wait();
+    // Freeze the deadline at completion so it cannot fire while output drains.
+    deadline?.settle();
     await Promise.all(outputs);
   } finally {
     disposeInput();
@@ -198,11 +201,53 @@ export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo
       io.stderr.write(`[mxc] warning: ${warning}\n`);
     }
   }
-  if (result.timedOut) {
+  if (result.timedOut || deadline?.fired()) {
     io.stderr.write("MXC sandbox command timed out and was terminated.\n");
     return EXIT_TIMED_OUT;
   }
   return result.exitCode;
+}
+
+// Extra time the executor waits past the launcher-owned PTY deadline. It only
+// matters if the launcher fails to kill the sandbox itself.
+export const PTY_EXECUTOR_BACKSTOP_MS = 5000;
+
+/**
+ * MXC 1.0 runs ProcessContainer PTY sessions through wxc-exec under node-pty.
+ * That result never reports `timedOut`, and wxc-exec's timeout status (-1) is
+ * indistinguishable from a command that exits -1. The launcher therefore owns
+ * the PTY deadline: it reports a timeout only when its own timer killed a
+ * sandbox that had not completed and no forwarded signal had already cancelled it.
+ */
+export function armPtyDeadline(spawned, timeoutMs, signals, timers = {}) {
+  let fired = false;
+  let settled = false;
+  const timer = (timers.setTimeout ?? setTimeout)(() => {
+    if (settled || signals.signaled()) {
+      return;
+    }
+    fired = true;
+    try {
+      spawned.kill();
+    } catch {
+      // The sandbox may already be exiting; wait() still owns completion.
+    }
+  }, timeoutMs);
+  timer?.unref?.();
+  const settle = () => {
+    if (!settled) {
+      settled = true;
+      (timers.clearTimeout ?? clearTimeout)(timer);
+    }
+  };
+  return { fired: () => fired, settle };
+}
+
+function positiveTimeoutMs(request) {
+  const timeoutMs = request?.timeoutMs;
+  return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : undefined;
 }
 
 /**
@@ -210,14 +255,26 @@ export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo
  * supplies the v1 `spawn` and `spawnWithPty` functions so tests can substitute
  * them. Signal forwarding created here is released before returning.
  */
-export async function launchSandbox(sdk, request, options = {}, signals, io = processIo()) {
+export async function launchSandbox(sdk, request, options = {}, signals, io, timers) {
   const forwarded = signals ?? forwardSignals();
+  let deadline;
   try {
-    const spawned = options.pty ? await sdk.spawnWithPty(request) : await sdk.spawn(request);
+    const ptyTimeoutMs = options.pty ? positiveTimeoutMs(request) : undefined;
+    const spawnRequest =
+      ptyTimeoutMs === undefined
+        ? request
+        : { ...request, timeoutMs: ptyTimeoutMs + PTY_EXECUTOR_BACKSTOP_MS };
+    const spawned = options.pty
+      ? await sdk.spawnWithPty(spawnRequest)
+      : await sdk.spawn(spawnRequest);
     forwarded.attach(spawned);
-    const exitCode = await bridgeProcess(spawned, options, io);
+    if (ptyTimeoutMs !== undefined) {
+      deadline = armPtyDeadline(spawned, ptyTimeoutMs, forwarded, timers);
+    }
+    const exitCode = await bridgeProcess(spawned, options, io, deadline);
     return forwarded.exitCode() ?? exitCode;
   } finally {
+    deadline?.settle();
     if (!signals) {
       forwarded.dispose();
     }
@@ -281,7 +338,13 @@ export async function main(argv = process.argv.slice(2)) {
           `[mxc] native library ${pinned.nativeLibraryPath}; executor ${pinned.executorPath}\n`,
         );
       }
-      process.exitCode = await launchSandbox(await loadSdk(), request, options ?? {}, signals);
+      process.exitCode = await launchSandbox(
+        await loadSdk(),
+        request,
+        options ?? {},
+        signals,
+        processIo(),
+      );
     }
   } catch (error) {
     process.stderr.write(`${formatErrorStack(error)}\n`);
