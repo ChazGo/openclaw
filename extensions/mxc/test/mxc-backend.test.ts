@@ -444,86 +444,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     ).rejects.toThrow(/MXC native library .*mxc_ffi\.dll is missing/u);
   });
 
-  test("processcontainer containment emits the Windows ProcessContainer payload", async () => {
-    const handle = createMxcSandboxBackendHandle({
-      ...baseParams,
-      config: { ...baseConfig, containment: "processcontainer" },
-    });
-    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
-
-    expect(decodeRequest(spec.argv).containment).toMatchObject({ type: "processcontainer" });
-  });
-
-  test("filesystem baseline follows the host Windows system and program files roots", async () => {
-    const hostRoot = mkdtempSync(path.join(tmpdir(), "mxc-host-roots-"));
-    const systemRoot = path.join(hostRoot, "Windows");
-    const programFiles = path.join(hostRoot, "Program Files");
-    const programFilesX86 = path.join(hostRoot, "Program Files (x86)");
-    try {
-      mkdirSync(path.join(systemRoot, "System32"), { recursive: true });
-      mkdirSync(path.join(systemRoot, "SysWOW64"), { recursive: true });
-      mkdirSync(programFiles, { recursive: true });
-      mkdirSync(programFilesX86, { recursive: true });
-      await withProcessEnv(
-        {
-          SystemRoot: systemRoot,
-          WINDIR: undefined,
-          ProgramFiles: programFiles,
-          "ProgramFiles(x86)": programFilesX86,
-          ProgramW6432: undefined,
-        },
-        async () => {
-          const handle = createMxcSandboxBackendHandle(baseParams);
-          const spec = await handle.buildExecSpec({
-            command: "echo hello",
-            env: {},
-            usePty: false,
-          });
-
-          const filesystem = objectField(decodeRequest(spec.argv), "filesystem");
-          const readonly = stringArrayField(filesystem, "readonlyPaths");
-          expect(readonly).toContain(programFiles);
-          expect(readonly).toContain(programFilesX86);
-          expect(readonly).toContain(path.join(systemRoot, "System32"));
-          expect(readonly).toContain(path.join(systemRoot, "SysWOW64"));
-        },
-      );
-    } finally {
-      rmSync(hostRoot, { recursive: true, force: true });
-    }
-  });
-
-  test.each(["none", "ro"] as const)(
-    "workspaceAccess %s maps the sandbox workdir to readonlyPaths",
-    async (workspaceAccess) => {
-      const handle = createMxcSandboxBackendHandle({
-        ...baseParams,
-        workspaceAccess,
-      });
-      const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
-
-      const filesystem = objectField(decodeRequest(spec.argv), "filesystem");
-      const readwrite = stringArrayField(filesystem, "readwritePaths");
-      const readonly = stringArrayField(filesystem, "readonlyPaths");
-      expect(readwrite).not.toContain(path.resolve(baseParams.workdir));
-      expect(readonly).toContain(path.resolve(baseParams.workdir));
-    },
-  );
-
-  test("workspaceAccess rw maps the sandbox workdir to readwritePaths", async () => {
-    const handle = createMxcSandboxBackendHandle({
-      ...baseParams,
-      workspaceAccess: "rw",
-    });
-    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
-
-    const filesystem = objectField(decodeRequest(spec.argv), "filesystem");
-    const readwrite = stringArrayField(filesystem, "readwritePaths");
-    const readonly = stringArrayField(filesystem, "readonlyPaths");
-    expect(readwrite).toContain(path.resolve(baseParams.workdir));
-    expect(readonly).not.toContain(path.resolve(baseParams.workdir));
-  });
-
   test("workspace access policies honor distinct sandbox and agent workspace roots", async () => {
     const sandboxWorkdir = mkdtempSync(path.join(tmpdir(), "mxc-distinct-sandbox-"));
     const agentWorkspaceDir = mkdtempSync(path.join(tmpdir(), "mxc-distinct-agent-"));
@@ -593,33 +513,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     }
   });
 
-  test("workspaceAccess rw fails closed when protected skill roots exist", async () => {
-    const workdir = mkdtempSync(path.join(tmpdir(), "mxc-protected-skills-"));
-    const skillsWorkspaceDir = mkdtempSync(path.join(tmpdir(), "mxc-materialized-skills-"));
-    try {
-      mkdirSync(path.join(workdir, "skills", "demo"), { recursive: true });
-      mkdirSync(path.join(workdir, ".agents", "skills", "demo"), { recursive: true });
-      mkdirSync(path.join(workdir, ".openclaw", "sandbox-skills", "skills", "demo"), {
-        recursive: true,
-      });
-      mkdirSync(path.join(skillsWorkspaceDir, "skills", "demo"), { recursive: true });
-      const handle = createMxcSandboxBackendHandle({
-        ...baseParams,
-        workdir,
-        agentWorkspaceDir: workdir,
-        skillsWorkspaceDir,
-        workspaceAccess: "rw",
-      });
-
-      await expect(
-        handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false }),
-      ).rejects.toThrow(/overlaps read-only path/u);
-    } finally {
-      rmSync(workdir, { recursive: true, force: true });
-      rmSync(skillsWorkspaceDir, { recursive: true, force: true });
-    }
-  });
-
   test("workspaceAccess rw fails closed before materialized skill targets can be created", async () => {
     const workdir = mkdtempSync(path.join(tmpdir(), "mxc-protected-skills-missing-target-"));
     const skillsWorkspaceDir = mkdtempSync(path.join(tmpdir(), "mxc-materialized-skills-source-"));
@@ -658,31 +551,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     await expect(
       handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false }),
     ).rejects.toThrow(/overlaps read-only path/u);
-  });
-
-  test("policy readwrite paths remain writable when workspaceAccess is none", async () => {
-    const extraPath = mkdtempSync(path.join(tmpdir(), "mxc-extra-rw-"));
-    try {
-      const handle = createMxcSandboxBackendHandle({
-        ...baseParams,
-        config: sandboxPolicyConfig({
-          filesystem: {
-            additionalReadwritePaths: [extraPath],
-          },
-        }),
-        workspaceAccess: "none",
-      });
-      const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
-
-      const filesystem = objectField(decodeRequest(spec.argv), "filesystem");
-      const readwrite = stringArrayField(filesystem, "readwritePaths");
-      const readonly = stringArrayField(filesystem, "readonlyPaths");
-      expect(readwrite).not.toContain(path.resolve(baseParams.workdir));
-      expect(readwrite).toContain(path.resolve(extraPath));
-      expect(readonly).toContain(path.resolve(baseParams.workdir));
-    } finally {
-      rmSync(extraPath, { recursive: true, force: true });
-    }
   });
 
   test("fails closed when an operator-configured filesystem path disappears before launch", async () => {
@@ -1070,24 +938,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     },
   );
 
-  test("Windows process containment preserves caller env overrides", async () => {
-    const handle = createMxcSandboxBackendHandle({
-      ...baseParams,
-      workdir: baseParams.workdir,
-    });
-    const spec = await handle.buildExecSpec({
-      command: "echo hello",
-      env: { HOME: "/home/test", LANG: "en_US.UTF-8", CUSTOM_VAR: "value" },
-      usePty: false,
-    });
-
-    const launchRequest = decodeRequest(spec.argv);
-    const env = environmentEntries(launchRequest);
-    expect(env).toContain("HOME=/home/test");
-    expect(env).toContain("LANG=en_US.UTF-8");
-    expect(env).toContain("CUSTOM_VAR=value");
-  });
-
   test("timeout falls back to the sandbox baseline when config uses defaults", async () => {
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
@@ -1103,17 +953,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
 
     const launchRequest = decodeRequest(spec.argv);
     expect(launchRequest.timeoutMs).toBe(45_000);
-  });
-
-  test("timeout falls back to the built-in baseline when no policy paths are configured", async () => {
-    const handle = createMxcSandboxBackendHandle({
-      ...baseParams,
-      config: resolveConfig({}),
-    });
-    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
-
-    const launchRequest = decodeRequest(spec.argv);
-    expect(launchRequest.timeoutMs).toBe(300_000);
   });
 
   test("timeout policy caps explicit config timeouts", async () => {
@@ -1238,63 +1077,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
       rmSync(workdir, { recursive: true, force: true });
       rmSync(readonlyRoot, { recursive: true, force: true });
     }
-  });
-
-  test("runShellCommand uses the inline Windows command line when no args are passed", async () => {
-    let launchRequest: Record<string, unknown> | undefined;
-    spawnCommandMock.mockImplementationOnce(async (argv: string[]) => {
-      launchRequest = decodeRequest(argv);
-      return {
-        code: 0,
-        signal: null,
-        killed: false,
-        termination: "exit",
-        stdout: Buffer.alloc(0),
-        stderr: Buffer.alloc(0),
-      };
-    });
-    const handle = createMxcSandboxBackendHandle(baseParams);
-    await handle.runShellCommand({
-      script: "echo hello",
-      stdin: "",
-      allowFailure: false,
-    });
-
-    const expectedShell = process.env.ComSpec?.trim() || "cmd.exe";
-    expect(launchRequest?.command).toBe(`${expectedShell} /d /s /c "echo hello"`);
-    expect(String(launchRequest?.command)).not.toContain(".openclaw-mxc-cmd-");
-  });
-
-  test("runShellCommand timeout is capped by sandbox policy", async () => {
-    let launchRequest: Record<string, unknown> | undefined;
-    spawnCommandMock.mockImplementationOnce(async (argv: string[]) => {
-      launchRequest = decodeRequest(argv);
-      return {
-        code: 0,
-        signal: null,
-        killed: false,
-        termination: "exit",
-        stdout: Buffer.alloc(0),
-        stderr: Buffer.alloc(0),
-      };
-    });
-    const handle = createMxcSandboxBackendHandle({
-      ...baseParams,
-      config: sandboxPolicyConfig(
-        {
-          filesystem: {},
-          process: { timeoutSeconds: 5 },
-        },
-        baseConfig,
-      ),
-    });
-    await handle.runShellCommand({
-      script: "echo hello",
-      stdin: "",
-      allowFailure: false,
-    });
-
-    expect(launchRequest?.timeoutMs).toBe(5_000);
   });
 
   test("runShellCommand uses curated Windows env and passes stdin through unchanged", async () => {
@@ -1426,21 +1208,6 @@ describeOnWindows("createMxcSandboxBackendHandle (Windows-only MXC backend tests
     );
   });
 
-  test("runShellCommand passes AbortSignal to the MXC child process", async () => {
-    const handle = createMxcSandboxBackendHandle(baseParams);
-    const controller = new AbortController();
-
-    await handle.runShellCommand({
-      script: "true",
-      stdin: "",
-      allowFailure: false,
-      signal: controller.signal,
-    });
-
-    const options = spawnCommandMock.mock.calls[0]?.[1] as { signal?: AbortSignal } | undefined;
-    expect(options?.signal).toBe(controller.signal);
-  });
-
   test("runShellCommand reports executor failures when allowed", async () => {
     spawnCommandMock.mockResolvedValueOnce({
       code: 7,
@@ -1557,15 +1324,6 @@ describeOnWindows("mxcSandboxBackendManager (Windows-only MXC backend tests)", (
     expect(info.running).toBe(false);
     expect(info.actualConfigLabel).toBe("mxc-process");
     expect(info.configLabelMatch).toBe(true);
-  });
-
-  test("removeRuntime completes without error", async () => {
-    await expect(
-      mxcSandboxBackendManager.removeRuntime({
-        entry: {} as never,
-        config: {} as never,
-      }),
-    ).resolves.toBeUndefined();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

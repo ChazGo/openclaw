@@ -1,15 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   loadExactSessionEntry,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { readLegacyAcpMigrationContext } from "../../config/sessions/session-accessor.sqlite-acp-provenance.js";
 import { retainPreparedSessionSharingFacts } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
-import * as entryPublication from "../../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import { projectSessionSharingEntry } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import * as entryPublication from "../../config/sessions/session-accessor.sqlite-entry-worker-publication.js";
 import * as historyMaintenance from "../../config/sessions/session-history-eviction.js";
 import type { SessionAcpMeta } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -27,7 +29,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as entryWorker from "./session-meta-entry.js";
 import { buildAcpDatabaseSessionKey } from "./session-meta-keys.js";
 import { upsertAcpSessionMeta } from "./session-meta-write.js";
-import { readAcpSessionMeta, writeAcpSessionMetaForMigration } from "./session-meta.js";
+import { readAcpSessionEntry, writeAcpSessionMetaForMigration } from "./session-meta.js";
 
 const META: SessionAcpMeta = {
   backend: "fixture-backend",
@@ -101,7 +103,7 @@ it("does not publish a delayed ACP postimage over a newer native publication", a
         expect(superseded).toBe(true);
         expect(changes.length).toBeGreaterThan(0);
         expect(changes.every((change) => change === undefined)).toBe(true);
-        expect(readAcpSessionMeta(scope)).toEqual(native);
+        expect(readAcpSessionEntry(scope)?.acp).toEqual(native);
       } finally {
         release();
         intercept.mockRestore();
@@ -192,7 +194,7 @@ it.each(["incognito", "file"] as const)(
             throw new Error("Expected the initialized ACP session");
           }
           if (incognito) {
-            expect(readAcpSessionMeta(scope)).toEqual(META);
+            expect(readAcpSessionEntry(scope)?.acp).toEqual(META);
           }
           const retainedMembership: boolean[] = [];
           const releases: Array<() => void> = [];
@@ -223,7 +225,7 @@ it.each(["incognito", "file"] as const)(
             expect(updated?.acp).toEqual(updatedMeta);
             expect(observedAcp.at(-1)?.acp).toEqual(updatedMeta);
             if (incognito) {
-              expect(readAcpSessionMeta(scope)).toEqual(updatedMeta);
+              expect(readAcpSessionEntry(scope)?.acp).toEqual(updatedMeta);
             } else {
               expect(retainedMembership.length).toBeGreaterThan(0);
               expect(retainedMembership.every(Boolean)).toBe(true);
@@ -253,7 +255,7 @@ it.each(["incognito", "file"] as const)(
           observe.restore();
           maintenance.mockRestore();
         }
-        expect(readAcpSessionMeta(scope)).toBeUndefined();
+        expect(readAcpSessionEntry(scope)?.acp).toBeUndefined();
         const persisted = loadExactSessionEntry(scope)?.entry;
         expect(persisted?.sessionId).toBeTruthy();
         expect(persisted?.acp).toBeUndefined();
@@ -271,6 +273,14 @@ it.each(["incognito", "file"] as const)(
               .db.prepare("SELECT count(*) AS count FROM acp_sessions")
               .get(),
           ).toEqual({ count: 0 });
+          const invalid = { ...scope, sessionKey: `${scope.sessionKey}-uncloneable` };
+          await expect(
+            upsertAcpSessionMeta({
+              ...invalid,
+              mutate: () => ({ ...META, uncloneable: () => undefined }),
+            }),
+          ).rejects.toThrow(/could not be cloned/);
+          expect(loadExactSessionEntry(invalid)?.entry).toBeUndefined();
         }
       },
     );
@@ -293,6 +303,7 @@ it.each([
       async (state) => {
         const cfg: OpenClawConfig = { agents: { ownership: "explicit", entries: { main: {} } } };
         await state.writeConfig(cfg);
+        setRuntimeConfigSnapshot(cfg);
         const scope = {
           cfg,
           env: state.env,
@@ -354,12 +365,11 @@ it.each([
           (error: unknown) => ({ ok: false as const, error }),
         );
         try {
-          await Promise.race([
+          await awaitGateBeforeSettlement(
             reached.promise,
-            outcome.then(() => {
-              throw new Error("ACP update settled before the requested mutation boundary");
-            }),
-          ]);
+            outcome,
+            "ACP update settled before the requested mutation boundary",
+          );
           const next = {
             ...originalEntry,
             sessionId:
@@ -407,7 +417,7 @@ it.each([
           } else {
             expect(loadExactSessionEntry(scope)?.entry).toEqual(replacementEntry);
           }
-          expect(readAcpSessionMeta(scope)).toEqual(
+          expect(readAcpSessionEntry(scope)?.acp).toEqual(
             replacement === "same-lifecycle" ? updatedMeta : replacementMeta,
           );
         } finally {
@@ -426,6 +436,7 @@ it("does not close a lifecycle that appears after an absent-entry close was prep
     async (state) => {
       const cfg: OpenClawConfig = { agents: { ownership: "explicit", entries: { main: {} } } };
       await state.writeConfig(cfg);
+      setRuntimeConfigSnapshot(cfg);
       openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const scope = {
         cfg,
@@ -465,12 +476,11 @@ it("does not close a lifecycle that appears after an absent-entry close was prep
         (error: unknown) => ({ ok: false as const, error }),
       );
       try {
-        await Promise.race([
+        await awaitGateBeforeSettlement(
           reached.promise,
-          outcome.then(() => {
-            throw new Error("ACP close settled before shared publication");
-          }),
-        ]);
+          outcome,
+          "ACP close settled before shared publication",
+        );
         await replaceSessionEntry(scope, {
           sessionId: "appeared-session",
           lifecycleRevision: "appeared-revision",
@@ -495,7 +505,7 @@ it("does not close a lifecycle that appears after an absent-entry close was prep
         }
         expect(mutate).toHaveBeenCalledOnce();
         expect(loadExactSessionEntry(scope)?.entry).toEqual(appeared);
-        expect(readAcpSessionMeta(scope)).toEqual(META);
+        expect(readAcpSessionEntry(scope)?.acp).toEqual(META);
       } finally {
         release.resolve();
         await outcome;

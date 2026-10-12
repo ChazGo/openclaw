@@ -64,15 +64,20 @@ function formatErrorStack(error) {
   return String(error);
 }
 
+// The exec supervisor or runCommandBuffered owns descendant-tree cancellation.
+// This SDK bridge must stay alive until wait() settles; exiting the launcher is not that join.
 /**
- * Kills the sandbox on a forwarded signal and exits after a grace period. The
- * handlers are installed before spawn resolves; a signal that arrives earlier
- * kills the process as soon as it exists.
+ * Kills the sandbox on a forwarded signal and, after a grace period, records the
+ * signal exit status and kills it again. The handlers are installed before spawn
+ * resolves; a signal that arrives earlier kills the process as soon as it exists.
+ * MXC 1.0 `kill()` already terminates the sandbox; completion still belongs to
+ * `wait()`.
  */
 export function forwardSignals(options = {}) {
   let target;
   let pendingKill = false;
   let exitTimer;
+  let forcedExitCode;
   const exitGraceMs = options.exitGraceMs ?? FORWARDED_SIGNAL_EXIT_GRACE_MS;
   const killTarget = () => {
     try {
@@ -81,24 +86,27 @@ export function forwardSignals(options = {}) {
       // Ignore kill errors while the sandbox process is already exiting.
     }
   };
-  const scheduleExit = (signal) => {
+  const scheduleForcedExit = (signal) => {
     if (exitTimer) {
       return;
     }
-    const setTimeoutFn = options.setTimeout?.bind(undefined) ?? setTimeout;
-    exitTimer = setTimeoutFn(() => {
-      const exit = options.exit?.bind(undefined) ?? ((code) => process.exit(code));
-      exit(signalExitCode(signal));
+    exitTimer = (options.setTimeout ?? setTimeout)(() => {
+      forcedExitCode = signalExitCode(signal);
+      killTarget();
     }, exitGraceMs);
     exitTimer?.unref?.();
   };
   const onSignal = options.onSignal ?? ((signal, handler) => process.on(signal, handler));
+  const offSignal = options.offSignal ?? ((signal, handler) => process.off(signal, handler));
+  const listeners = new Map();
   for (const signal of FORWARDED_SIGNALS) {
-    onSignal(signal, () => {
+    const listener = () => {
       pendingKill = true;
       killTarget();
-      scheduleExit(signal);
-    });
+      scheduleForcedExit(signal);
+    };
+    onSignal(signal, listener);
+    listeners.set(signal, listener);
   }
   return {
     attach(spawned) {
@@ -106,6 +114,16 @@ export function forwardSignals(options = {}) {
       if (pendingKill) {
         killTarget();
       }
+    },
+    exitCode: () => forcedExitCode,
+    dispose() {
+      if (exitTimer) {
+        (options.clearTimeout ?? clearTimeout)(exitTimer);
+      }
+      for (const [signal, listener] of listeners) {
+        offSignal(signal, listener);
+      }
+      listeners.clear();
     },
   };
 }
@@ -128,18 +146,27 @@ function pipeOutput(source, sink, stderr) {
   });
 }
 
+/** Forwards launcher stdin into the sandbox and returns a disposer that releases it. */
 function forwardInput(stdin, input, onEnd) {
   if (!input) {
     stdin.resume();
-    return;
+    return () => stdin.pause();
   }
   input.on("error", () => {
     // The sandbox may close stdin before the host stops writing.
   });
-  stdin.on("data", (data) => {
+  const onData = (data) => {
     input.write(data);
-  });
-  stdin.once("end", () => onEnd(input));
+  };
+  const onStdinEnd = () => onEnd(input);
+  stdin.on("data", onData);
+  stdin.once("end", onStdinEnd);
+  return () => {
+    stdin.off("data", onData);
+    stdin.off("end", onStdinEnd);
+    stdin.pause();
+    input.destroy?.();
+  };
 }
 
 /**
@@ -148,18 +175,24 @@ function forwardInput(stdin, input, onEnd) {
  */
 export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo()) {
   let outputs;
+  let disposeInput;
   if (pty) {
-    forwardInput(io.stdin, spawned.input, (input) => input.write("\x04"));
+    disposeInput = forwardInput(io.stdin, spawned.input, (input) => input.write("\x04"));
     outputs = [pipeOutput(spawned.output, io.stdout, io.stderr)];
   } else {
-    forwardInput(io.stdin, spawned.standardInput, (input) => input.end());
+    disposeInput = forwardInput(io.stdin, spawned.standardInput, (input) => input.end());
     outputs = [
       pipeOutput(spawned.standardOutput, io.stdout, io.stderr),
       pipeOutput(spawned.standardError, io.stderr, io.stderr),
     ];
   }
-  const result = await spawned.wait();
-  await Promise.all(outputs);
+  let result;
+  try {
+    result = await spawned.wait();
+    await Promise.all(outputs);
+  } finally {
+    disposeInput();
+  }
   if (debug) {
     for (const warning of spawned.warnings ?? []) {
       io.stderr.write(`[mxc] warning: ${warning}\n`);
@@ -173,19 +206,22 @@ export async function bridgeProcess(spawned, { pty, debug } = {}, io = processIo
 }
 
 /**
- * Runs one sandbox request. `sdk` supplies the v1 `spawn` and `spawnWithPty`
- * functions so tests can substitute them.
+ * Runs one sandbox request and resolves with the exit status to report. `sdk`
+ * supplies the v1 `spawn` and `spawnWithPty` functions so tests can substitute
+ * them. Signal forwarding created here is released before returning.
  */
-export async function launchSandbox(
-  sdk,
-  request,
-  options = {},
-  signals = forwardSignals(),
-  io = processIo(),
-) {
-  const spawned = options.pty ? await sdk.spawnWithPty(request) : await sdk.spawn(request);
-  signals.attach(spawned);
-  return bridgeProcess(spawned, options, io);
+export async function launchSandbox(sdk, request, options = {}, signals, io = processIo()) {
+  const forwarded = signals ?? forwardSignals();
+  try {
+    const spawned = options.pty ? await sdk.spawnWithPty(request) : await sdk.spawn(request);
+    forwarded.attach(spawned);
+    const exitCode = await bridgeProcess(spawned, options, io);
+    return forwarded.exitCode() ?? exitCode;
+  } finally {
+    if (!signals) {
+      forwarded.dispose();
+    }
+  }
 }
 
 const SIGNAL_NUMBERS = new Map([
@@ -232,12 +268,12 @@ async function probeMain() {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  let exitCode;
+  let signals;
   try {
     if (argv.includes("--probe")) {
-      exitCode = await probeMain();
+      process.exitCode = await probeMain();
     } else {
-      const signals = forwardSignals();
+      signals = forwardSignals();
       const { request, options } = decodePayload(argv);
       const pinned = assertPinnedNativeComponents();
       if (options?.debug) {
@@ -245,19 +281,14 @@ export async function main(argv = process.argv.slice(2)) {
           `[mxc] native library ${pinned.nativeLibraryPath}; executor ${pinned.executorPath}\n`,
         );
       }
-      exitCode = await launchSandbox(await loadSdk(), request, options ?? {}, signals);
+      process.exitCode = await launchSandbox(await loadSdk(), request, options ?? {}, signals);
     }
   } catch (error) {
     process.stderr.write(`${formatErrorStack(error)}\n`);
-    exitCode = EXIT_LAUNCHER_FAILURE;
+    process.exitCode = EXIT_LAUNCHER_FAILURE;
+  } finally {
+    signals?.dispose();
   }
-  // Windows pipes are asynchronous; let queued output drain before exiting.
-  await Promise.all(
-    [process.stdout, process.stderr].map(
-      (stream) => new Promise((resolve) => stream.write("", () => resolve())),
-    ),
-  );
-  process.exit(exitCode);
 }
 
 if (isMain()) {

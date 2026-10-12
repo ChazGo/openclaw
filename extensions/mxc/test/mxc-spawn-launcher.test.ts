@@ -24,7 +24,11 @@ type FakeProcess = {
   kill: () => void;
 };
 type Io = { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough };
-type Signals = { attach: (spawned: unknown) => void };
+type Signals = {
+  attach: (spawned: unknown) => void;
+  exitCode: () => number | undefined;
+  dispose: () => void;
+};
 
 const loadLauncher = () =>
   require(launcherPath) as {
@@ -35,10 +39,11 @@ const loadLauncher = () =>
       fileExists: (file: string) => boolean,
     ) => { nativeLibraryPath: string; executorPath: string };
     forwardSignals: (options?: {
-      exit?: (code: number) => void;
       exitGraceMs?: number;
       onSignal?: (signal: string, handler: () => void) => void;
+      offSignal?: (signal: string, handler: () => void) => void;
       setTimeout?: (callback: () => void, ms: number) => { unref?: () => void };
+      clearTimeout?: (timer: unknown) => void;
     }) => Signals;
     launchSandbox: (
       sdk: {
@@ -47,7 +52,7 @@ const loadLauncher = () =>
       },
       request: unknown,
       options: { pty?: boolean; debug?: boolean },
-      signals: Signals,
+      signals: Signals | undefined,
       io: Io,
     ) => Promise<number>;
     signalExitCode: (signal: number | string | undefined) => number;
@@ -75,7 +80,7 @@ function endedStream(text: string): PassThrough {
   return stream;
 }
 
-const attachOnly: Signals = { attach: () => {} };
+const attachOnly: Signals = { attach: () => {}, exitCode: () => undefined, dispose: () => {} };
 
 describe("mxc-spawn-launcher", () => {
   it("decodes a JSON --payload-file and removes it before spawning", () => {
@@ -228,20 +233,25 @@ describe("mxc-spawn-launcher", () => {
     expect(io.read(io.stderr)).toMatch(/timed out/u);
   });
 
-  it("kills a sandbox that finishes spawning after a forwarded signal", () => {
+  it("kills a sandbox that finishes spawning after a forwarded signal without exiting", () => {
     const { forwardSignals } = loadLauncher();
     const handlers = new Map<string, () => void>();
-    const exit = vi.fn();
+    const clearTimeoutMock = vi.fn();
     const timers: Array<{ callback: () => void; ms: number; unref: ReturnType<typeof vi.fn> }> = [];
     const signals = forwardSignals({
-      exit,
       exitGraceMs: 25,
       onSignal: (signal, handler) => handlers.set(signal, handler),
+      offSignal: (signal, handler) => {
+        if (handlers.get(signal) === handler) {
+          handlers.delete(signal);
+        }
+      },
       setTimeout: (callback, ms) => {
         const timer = { callback, ms, unref: vi.fn() };
         timers.push(timer);
         return timer;
       },
+      clearTimeout: clearTimeoutMock,
     });
 
     handlers.get("SIGTERM")?.();
@@ -253,8 +263,52 @@ describe("mxc-spawn-launcher", () => {
     expect(timers).toHaveLength(1);
     expect(timers[0]?.ms).toBe(25);
     expect(timers[0]?.unref).toHaveBeenCalledTimes(1);
+    expect(signals.exitCode()).toBeUndefined();
     timers[0]?.callback();
-    expect(exit).toHaveBeenCalledWith(143);
+    expect(spawned.kill).toHaveBeenCalledTimes(3);
+    expect(signals.exitCode()).toBe(143);
+    signals.dispose();
+    expect(clearTimeoutMock).toHaveBeenCalledWith(timers[0]);
+    expect(handlers.size).toBe(0);
+  });
+
+  it("releases launcher input and signal listeners once the sandbox completes", async () => {
+    const { launchSandbox } = loadLauncher();
+    const io = createIo();
+    const signalListeners = process.listeners("SIGTERM");
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("forced launcher exit");
+    });
+    const standardInput = new PassThrough();
+    let finish: (result: WaitResult) => void = () => {};
+    const spawned: FakeProcess = {
+      standardInput,
+      standardOutput: endedStream(""),
+      standardError: endedStream(""),
+      wait: () => new Promise((resolve) => (finish = resolve)),
+      kill: vi.fn(),
+    };
+    try {
+      const result = launchSandbox(
+        { spawn: async () => spawned, spawnWithPty: vi.fn() },
+        {},
+        {},
+        undefined,
+        io,
+      );
+      await vi.waitFor(() => expect(io.stdin.listenerCount("data")).toBe(1));
+      expect(process.listeners("SIGTERM")).toHaveLength(signalListeners.length + 1);
+      finish({ exitCode: 7, timedOut: false });
+
+      await expect(result).resolves.toBe(7);
+      expect(exit).not.toHaveBeenCalled();
+      expect(io.stdin.listenerCount("data")).toBe(0);
+      expect(io.stdin.listenerCount("end")).toBe(0);
+      expect(standardInput.destroyed).toBe(true);
+      expect(process.listeners("SIGTERM")).toEqual(signalListeners);
+    } finally {
+      exit.mockRestore();
+    }
   });
 
   it("maps signal exits to process exit codes", () => {

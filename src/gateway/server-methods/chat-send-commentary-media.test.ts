@@ -11,6 +11,8 @@ import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook
 import { buildAssistantMessage, buildUsageWithNoCost } from "../../agents/stream-message-shared.js";
 import { setReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
+import { getRuntimeConfig } from "../../config/io.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   appendTranscriptMessageSync,
   loadTranscriptEventsSync,
@@ -172,6 +174,20 @@ describe("webchat commentary media", () => {
       for (const url of authoredUrls) {
         remoteFixtures.set(url, fixtureUrl);
       }
+      const cfg = {
+        agents: { entries: { main: { workspace: state.workspaceDir } } },
+        ...(localMedia
+          ? {
+              tools: {
+                fs: { workspaceOnly: true },
+                ...(scenario === "sender-denied"
+                  ? { toolsBySender: { "id:cli": { deny: ["read"] } } }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+      setRuntimeConfigSnapshot(cfg);
       const scope = {
         agentId: "main",
         sessionId: "commentary-session",
@@ -221,6 +237,7 @@ describe("webchat commentary media", () => {
           transcriptLifecycle.withTranscriptWrite(operation),
       };
       const dispatch = createChatSendReplyDispatch({
+        getRuntimeConfig,
         accountId: undefined,
         requesterContext: { SenderId: "cli" },
         isAgentRunStarted: () => true,
@@ -230,19 +247,7 @@ describe("webchat commentary media", () => {
         session: {
           ...scope,
           backingSessionId: scope.sessionId,
-          cfg: {
-            agents: { entries: { main: { workspace: state.workspaceDir } } },
-            ...(localMedia
-              ? {
-                  tools: {
-                    fs: { workspaceOnly: true },
-                    ...(scenario === "sender-denied"
-                      ? { toolsBySender: { "id:cli": { deny: ["read"] } } }
-                      : {}),
-                  },
-                }
-              : {}),
-          },
+          cfg,
           clientRunId: runId,
           sessionLoadOptions: { agentId: "main" },
         },

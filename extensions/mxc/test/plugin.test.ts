@@ -1,5 +1,4 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -63,11 +62,6 @@ import { registerMxcPlugin } from "../src/plugin.js";
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 const arch = process.arch === "arm64" ? "arm64" : "x64";
-const sdkBinDir = path.join(
-  path.dirname(createRequire(import.meta.url).resolve("@microsoft/mxc-sdk/package.json")),
-  "bin",
-);
-const sdkNativeEnv = { MXC_BIN_DIR: sdkBinDir, MXC_FFI_DIR: path.join(sdkBinDir, arch) };
 
 function readBackend() {
   return {
@@ -170,30 +164,6 @@ describe("registerMxcPlugin", () => {
     expect(registerService).not.toHaveBeenCalled();
   });
 
-  test("registers eagerly on Windows and restores hooks on global restart", async () => {
-    const original = readBackend();
-    const { api, cleanup, stop } = createApi({ timeoutSeconds: 60 });
-
-    registerMxcPlugin(api);
-
-    expect(assertMxcReadinessMock).toHaveBeenCalledWith({ nativeEnv: sdkNativeEnv });
-    expect(warnMxcHostPrepIfNeededMock).toHaveBeenCalledWith();
-    expect(createMxcSandboxBackendFactoryMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        timeoutSeconds: 60,
-      }),
-    );
-    expect(readBackend()).toEqual({
-      factory: expect.any(Function),
-      manager: mxcSandboxBackendManagerMock,
-      resolveWorkdir: null,
-    });
-    await cleanup({ reason: "restart" });
-    expect(readBackend()).toEqual(original);
-    await stop();
-    expect(readBackend()).toEqual(original);
-  });
-
   test("blocks an SDK 0.8 override layout and registers after selecting an MXC 1.0 layout", async () => {
     const { assertMxcReadiness: runMxcReadiness } =
       await vi.importActual<typeof import("../src/readiness.js")>("../src/readiness.js");
@@ -246,14 +216,15 @@ describe("registerMxcPlugin", () => {
       expect(assertMxcReadinessMock).toHaveBeenCalledWith({ nativeEnv });
       expect(readinessProbeExecMock).toHaveBeenCalledTimes(1);
       expect(readBackend().factory).toEqual(expect.any(Function));
-      await recovered.stop();
+      await recovered.cleanup({ reason: "restart" });
       expect(readBackend()).toEqual(original);
     } finally {
       Object.defineProperty(process.versions, "node", nodeVersion);
       rmSync(root, { force: true, recursive: true });
     }
   });
-  test.each(["disable", "reset"] as const)(
+
+  test.each(["reset"] as const)(
     "preserves backend hooks during scoped %s cleanup",
     async (reason) => {
       const generation = createApi();

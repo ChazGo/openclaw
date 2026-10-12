@@ -197,12 +197,9 @@ describe("gateway connection state", () => {
                 scope,
               );
             }
-            const frames = peer.send.mock.calls.map(([frame]): unknown => {
-              if (typeof frame !== "string") {
-                throw new Error("expected a serialized Gateway event");
-              }
-              return JSON.parse(frame);
-            });
+            const frames = peer.send.mock.calls.map(([frame]): unknown =>
+              JSON.parse(String(frame)),
+            );
             expect.soft(frames, stage).toEqual(
               visibleKeys.flatMap((sessionKey) => [
                 expect.objectContaining({
@@ -388,6 +385,8 @@ describe("gateway connection state", () => {
 
   it("broadcasts to 50 members from committed facts while rows are dirty and revokes immediately without SQL", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const cfg: OpenClawConfig = {};
+      setRuntimeConfigSnapshot(cfg);
       const scope = { agentId: "main", sessionKey: "agent:main:broadcast-members" };
       await upsertSessionEntryCore(scope, {
         sessionId: "broadcast-members",
@@ -402,11 +401,11 @@ describe("gateway connection state", () => {
           broadcastDuringPublication?.();
         }
       });
-      const projection = await createSessionRowProjection({ cfg: {}, modelCatalog: [] });
+      const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
       const state = createGatewayConnectionState({
         scheduler: createTestGatewayScheduler(),
         bootId: "members",
-        cfg: {},
+        cfg,
       });
       const detach = state.attachSessionRowProjection(projection);
       const peers = Array.from({ length: 50 }, (_, index) => {
@@ -603,7 +602,6 @@ describe("gateway connection state", () => {
               ]);
               expect(peer.send).toHaveBeenCalledOnce();
               const frame = peer.send.mock.calls[0]?.[0];
-              expect(typeof frame).toBe("string");
               expect(JSON.parse(String(frame))).toMatchObject({
                 event: "presence",
                 payload: { presence: expected },

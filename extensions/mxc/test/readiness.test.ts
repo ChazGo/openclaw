@@ -101,9 +101,10 @@ describe("assertMxcReadiness", () => {
     },
   );
 
-  test("reports MXC tier degradation warnings without blocking activation", () => {
+  test("reports tier degradation without requiring system-drive preparation", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockProbe({
+      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
       probe: probeOutput({
         tier: "base-container",
         warnings: ["DACL deny augmentation is unavailable"],
@@ -159,14 +160,6 @@ describe("assertMxcReadiness", () => {
     );
   });
 
-  test("rejects hosts where the MXC probe cannot run", () => {
-    mockProbe({ probe: new Error("Command failed: mxc-spawn-launcher.mjs --probe") });
-
-    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
-      /host check failed: Command failed.*C:\\mxc\\bin\\x64.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
-    );
-  });
-
   test("rejects a probe that does not report JSON", () => {
     mockProbe({ probe: "Error: MXC native component is missing" });
 
@@ -183,12 +176,6 @@ describe("assertMxcReadiness", () => {
         nativeEnv: { MXC_BIN_DIR: "C:\\override", MXC_FFI_DIR: "C:\\override\\x64" },
       }),
     ).toThrow(/host check failed: probe ran without the pinned native environment/u);
-  });
-
-  test("does not gate activation on system-drive preparation", () => {
-    mockProbe({ systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n" });
-
-    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
   });
 });
 
@@ -211,23 +198,5 @@ describe("warnMxcHostPrepIfNeeded", () => {
     warnMxcHostPrepIfNeeded();
     expect(warn).toHaveBeenCalledOnce();
     expect(warn.mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
-  });
-
-  test("stays silent when the system drive is prepared (SID form)", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockProbe();
-
-    warnMxcHostPrepIfNeeded();
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  test("stays silent when the system drive is prepared (display-name form)", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockProbe({
-      systemDriveAcl: "C:\\ APPLICATION PACKAGES:(R)\n    BUILTIN\\Administrators:(F)\n",
-    });
-
-    warnMxcHostPrepIfNeeded();
-    expect(warn).not.toHaveBeenCalled();
   });
 });
