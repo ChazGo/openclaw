@@ -131,38 +131,65 @@ export function forwardSignals(options = {}) {
 
 const processIo = () => ({ stdin: process.stdin, stdout: process.stdout, stderr: process.stderr });
 
-function pipeOutput(source, sink, stderr) {
+function pipeOutput(source, sink, onError) {
   return new Promise((resolve) => {
     if (!source) {
       resolve();
       return;
     }
-    source.pipe(sink, { end: false });
-    source.once("end", resolve);
-    source.once("close", resolve);
-    source.once("error", (error) => {
-      stderr.write(`MXC output stream failed: ${formatErrorStack(error)}\n`);
+    const cleanup = () => {
+      source.off("end", finish);
+      source.off("close", finish);
+      source.off("error", fail);
+    };
+    const finish = () => {
+      cleanup();
       resolve();
-    });
+    };
+    const fail = (error) => {
+      cleanup();
+      onError(error);
+      resolve();
+    };
+    source.once("end", finish);
+    source.once("close", finish);
+    source.once("error", fail);
+    source.pipe(sink, { end: false });
   });
 }
 
 /** Forwards launcher stdin into the sandbox and returns a disposer that releases it. */
-function forwardInput(stdin, input, onEnd) {
+function forwardInput(stdin, input, onEnd, onError) {
   if (!input) {
     stdin.resume();
     return () => stdin.pause();
   }
-  input.on("error", () => {
+  const onInputError = (error) => {
     // The sandbox may close stdin before the host stops writing.
-  });
-  const onData = (data) => {
-    input.write(data);
+    if (error?.code !== "EPIPE") {
+      onError(error);
+    }
   };
-  const onStdinEnd = () => onEnd(input);
+  const onData = (data) => {
+    if (!input.write(data)) {
+      stdin.pause();
+    }
+  };
+  const onDrain = () => stdin.resume();
+  const onStdinEnd = () => {
+    try {
+      onEnd(input);
+    } catch (error) {
+      onInputError(error);
+    }
+  };
+  input.on("error", onInputError);
+  input.on("drain", onDrain);
   stdin.on("data", onData);
   stdin.once("end", onStdinEnd);
   return () => {
+    input.off("error", onInputError);
+    input.off("drain", onDrain);
     stdin.off("data", onData);
     stdin.off("end", onStdinEnd);
     stdin.pause();
@@ -175,16 +202,36 @@ function forwardInput(stdin, input, onEnd) {
  * status the launcher should report.
  */
 export async function bridgeProcess(spawned, { pty, debug }, io, deadline) {
+  /** @type {Error | undefined} */
+  let streamFailure;
+  const failStream = (error) => {
+    streamFailure ??= error instanceof Error ? error : new Error(String(error));
+    try {
+      spawned.kill();
+    } catch {
+      // A stream can fail after the sandbox has already exited.
+    }
+  };
   let outputs;
   let disposeInput;
   if (pty) {
-    disposeInput = forwardInput(io.stdin, spawned.input, (input) => input.write("\x04"));
-    outputs = [pipeOutput(spawned.output, io.stdout, io.stderr)];
+    disposeInput = forwardInput(
+      io.stdin,
+      spawned.input,
+      (input) => input.write("\x04"),
+      failStream,
+    );
+    outputs = [pipeOutput(spawned.output, io.stdout, failStream)];
   } else {
-    disposeInput = forwardInput(io.stdin, spawned.standardInput, (input) => input.end());
+    disposeInput = forwardInput(
+      io.stdin,
+      spawned.standardInput,
+      (input) => input.end(),
+      failStream,
+    );
     outputs = [
-      pipeOutput(spawned.standardOutput, io.stdout, io.stderr),
-      pipeOutput(spawned.standardError, io.stderr, io.stderr),
+      pipeOutput(spawned.standardOutput, io.stdout, failStream),
+      pipeOutput(spawned.standardError, io.stderr, failStream),
     ];
   }
   let result;
@@ -193,6 +240,9 @@ export async function bridgeProcess(spawned, { pty, debug }, io, deadline) {
     // Freeze the deadline at completion so it cannot fire while output drains.
     deadline?.settle();
     await Promise.all(outputs);
+    if (streamFailure) {
+      throw streamFailure;
+    }
   } finally {
     disposeInput();
   }

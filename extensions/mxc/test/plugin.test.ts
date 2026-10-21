@@ -40,6 +40,7 @@ const readyProbe = JSON.stringify({
   probe: { tier: "base-container", warnings: [], probes: {} },
 });
 const originalPlatform = process.platform;
+const originalNodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
 
 function readBackend() {
   return {
@@ -128,6 +129,10 @@ describe("registerMxcPlugin", () => {
       nativeLibraryPath: "C:\\mxc\\x64\\mxc_ffi.dll",
     });
     setProcessPlatformForTest("win32");
+    Object.defineProperty(process.versions, "node", {
+      ...originalNodeVersion,
+      value: "24.21.0",
+    });
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
@@ -137,6 +142,7 @@ describe("registerMxcPlugin", () => {
     }
     warnSpy.mockRestore();
     setProcessPlatformForTest(originalPlatform);
+    Object.defineProperty(process.versions, "node", originalNodeVersion);
   });
 
   test.each([

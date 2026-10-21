@@ -235,6 +235,100 @@ describe("mxc-spawn-launcher", () => {
     expect(io.read(io.stderr)).toBe("err");
   });
 
+  it("pauses launcher input until sandbox stdin drains", async () => {
+    const { launchSandbox } = loadLauncher();
+    const io = createIo();
+    const standardInput = new PassThrough();
+    const write = vi.spyOn(standardInput, "write").mockReturnValueOnce(false);
+    let finish: (result: WaitResult) => void = () => {};
+    const spawned: FakeProcess = {
+      standardInput,
+      standardOutput: endedStream(""),
+      standardError: endedStream(""),
+      wait: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      kill: vi.fn(),
+    };
+
+    const result = launchSandbox(
+      { spawn: async () => spawned, spawnWithPty: vi.fn() },
+      {},
+      {},
+      attachOnly,
+      io,
+    );
+    await vi.waitFor(() => expect(io.stdin.listenerCount("data")).toBe(1));
+    io.stdin.write("buffered input");
+    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+    expect(io.stdin.isPaused()).toBe(true);
+
+    standardInput.emit("drain");
+    expect(io.stdin.isPaused()).toBe(false);
+    io.stdin.end();
+    finish({ exitCode: 0, timedOut: false });
+
+    await expect(result).resolves.toBe(0);
+  });
+
+  it.each([
+    ["stdout", (spawned: FakeProcess) => spawned.standardOutput],
+    ["stdin", (spawned: FakeProcess) => spawned.standardInput],
+  ] as const)("fails the launcher when sandbox %s fails", async (_label, selectStream) => {
+    const { launchSandbox } = loadLauncher();
+    const io = createIo();
+    const spawned: FakeProcess = {
+      standardInput: new PassThrough(),
+      standardOutput: new PassThrough(),
+      standardError: endedStream(""),
+      wait: async () => ({ exitCode: 0, timedOut: false }),
+      kill: vi.fn(),
+    };
+    const failure = new Error("sandbox stream failed");
+    const result = launchSandbox(
+      { spawn: async () => spawned, spawnWithPty: vi.fn() },
+      {},
+      {},
+      attachOnly,
+      io,
+    );
+    const stream = selectStream(spawned);
+    await vi.waitFor(() => expect(stream?.listenerCount("error")).toBeGreaterThan(0));
+    stream?.emit("error", failure);
+    spawned.standardOutput?.emit("end");
+
+    await expect(result).rejects.toBe(failure);
+    expect(spawned.kill).toHaveBeenCalledOnce();
+  });
+
+  it("ignores EPIPE when the sandbox closes stdin before the input producer", async () => {
+    const { launchSandbox } = loadLauncher();
+    const io = createIo();
+    const standardInput = new PassThrough();
+    const standardOutput = new PassThrough();
+    const spawned: FakeProcess = {
+      standardInput,
+      standardOutput,
+      standardError: endedStream(""),
+      wait: async () => ({ exitCode: 0, timedOut: false }),
+      kill: vi.fn(),
+    };
+    const result = launchSandbox(
+      { spawn: async () => spawned, spawnWithPty: vi.fn() },
+      {},
+      {},
+      attachOnly,
+      io,
+    );
+    await vi.waitFor(() => expect(standardInput.listenerCount("error")).toBeGreaterThan(0));
+    standardInput.emit("error", Object.assign(new Error("stdin closed"), { code: "EPIPE" }));
+    standardOutput.end();
+
+    await expect(result).resolves.toBe(0);
+    expect(spawned.kill).not.toHaveBeenCalled();
+  });
+
   it("bridges PTY output and sends EOF as Ctrl-D", async () => {
     const { launchSandbox } = loadLauncher();
     const io = createIo();
