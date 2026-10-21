@@ -2,6 +2,10 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import type { ContainerRequest, FilesystemPolicy } from "@microsoft/mxc-sdk/v1";
 import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
+import {
+  resolveReadOnlyWorkspaceSkillMounts,
+  type SandboxContext,
+} from "openclaw/plugin-sdk/sandbox";
 import type { MxcConfig } from "./config.js";
 import { normalizeMxcPathForComparison } from "./path-comparison.js";
 import { resolveBaselineReadonlyPaths, type BaselineHostEnv } from "./sandbox-baseline.js";
@@ -11,10 +15,6 @@ import type {
 } from "./sandbox-policy-loader.js";
 import { buildCommandLine } from "./windows-command.js";
 import { normalizeWindowsProcessEnvRecord } from "./windows-env.js";
-import {
-  resolveMxcReadOnlySkillMounts,
-  type MxcWorkspaceAccess,
-} from "./workspace-skill-mounts.js";
 
 type FilesystemPathSpec = {
   path: string;
@@ -33,7 +33,7 @@ type MxcWorkspaceContext = {
   activeWorkspaceDir: string;
   skillsWorkspaceDir?: string;
   workdir: string;
-  workspaceAccess: MxcWorkspaceAccess;
+  workspaceAccess: SandboxContext["workspaceAccess"];
 };
 
 export function resolveCurrentBaselineContext(projectDir: string): BaselineApplicationContext {
@@ -55,7 +55,7 @@ export function resolveMxcWorkspaceContext(params: {
   workdir: string;
   agentWorkspaceDir?: string;
   skillsWorkspaceDir?: string;
-  workspaceAccess?: MxcWorkspaceAccess;
+  workspaceAccess?: SandboxContext["workspaceAccess"];
 }): MxcWorkspaceContext {
   const workspaceAccess = params.workspaceAccess ?? "rw";
   const workspaceDir = path.resolve(params.workdir);
@@ -158,6 +158,7 @@ function buildFilesystemPolicy(params: {
   const readwritePathSpecs: FilesystemPathSpec[] = [];
   const readonlyPathSpecs: FilesystemPathSpec[] = [];
   const workspace = params.workspace;
+  const protectedSkillPolicyPaths = resolveMxcProtectedSkillPolicyPaths(workspace);
   if (workspace.workspaceAccess === "rw") {
     readwritePathSpecs.push(requiredFilesystemPath(workspace.activeWorkspaceDir));
   } else {
@@ -173,7 +174,7 @@ function buildFilesystemPolicy(params: {
   readonlyPathSpecs.push(
     ...resolveBaselineReadonlyPaths(params.context.hostEnv).map(optionalFilesystemPath),
     ...params.baseline.configuredPaths.readonlyPaths.map(createConfiguredFilesystemPath),
-    ...resolveMxcProtectedSkillPolicyPaths(workspace).map(optionalFilesystemPath),
+    ...protectedSkillPolicyPaths.map(optionalFilesystemPath),
   );
 
   // Policy admission accepts only restrictToProjectDir=true.
@@ -188,16 +189,15 @@ function buildFilesystemPolicy(params: {
     ...params.baseline.configuredPaths.readwritePaths.map(createConfiguredFilesystemPath),
   );
 
-  const protectedSkillPolicyPaths = resolveMxcProtectedSkillPolicyPaths(params.workspace);
+  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
   // ProcessContainer writable-parent grants override nested read-only grants.
   // Fail closed instead of claiming protected skill overlays are enforceable.
   assertNoMxcReadwriteReadonlyOverlap({
-    readwritePaths: resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite"),
+    readwritePaths,
     readonlyPaths: protectedSkillPolicyPaths,
   });
 
   const readonlyPaths = resolveExistingFilesystemPaths(readonlyPathSpecs, "read-only");
-  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
   assertNoMxcReadwriteReadonlyOverlap({ readwritePaths, readonlyPaths });
 
   return {
@@ -208,8 +208,11 @@ function buildFilesystemPolicy(params: {
 }
 
 function resolveMxcProtectedSkillPolicyPaths(context: MxcWorkspaceContext): string[] {
+  if (context.workspaceAccess !== "rw") {
+    return [];
+  }
   const deduped = new Map<string, string>();
-  for (const mount of resolveMxcReadOnlySkillMounts(context)) {
+  for (const mount of resolveReadOnlyWorkspaceSkillMounts(context)) {
     const hostPath = path.resolve(mount.hostPath);
     deduped.set(normalizeMxcPathForComparison(hostPath), hostPath);
     const containerPath = path.resolve(mount.containerPath);

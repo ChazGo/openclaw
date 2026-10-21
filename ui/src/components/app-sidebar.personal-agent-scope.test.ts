@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../api/types.ts";
 import {
   createTestSessionCapability,
@@ -9,14 +9,19 @@ import {
 } from "../lib/sessions/session-capability.test-support.ts";
 import { bindChatPageSession } from "../pages/chat/chat-state-route.ts";
 import "../test-helpers/app-sidebar-suite.ts";
-import { createContext, createGatewayHarness, TWO_AGENTS } from "../test-helpers/app-sidebar.ts";
+import { selectSessionMenuValue } from "../test-helpers/app-sidebar-menu.ts";
+import {
+  createContext,
+  createGatewayHarness,
+  createSidebarElement,
+  TWO_AGENTS,
+} from "../test-helpers/app-sidebar.ts";
 import { createApplicationContextProvider } from "../test-helpers/application-context.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { settleLitElement } from "../test-helpers/lit-settle.ts";
-import { AppSidebarSessionNavigationElement } from "./app-sidebar-session-navigation.ts";
-import "./app-sidebar.ts";
+import "./app-sidebar.tsx";
 
-it("keeps My sessions across configured agents when viewing another user's session", async () => {
+it("keeps selected owners across agents and resumes the selected agent's own conversation", async () => {
   const rows: GatewaySessionRow[] = [
     {
       key: "agent:main:mine",
@@ -30,7 +35,27 @@ it("keeps My sessions across configured agents when viewing another user's sessi
       agentId: "research",
       kind: "direct",
       label: "Another user's shared session",
+      updatedAt: 3000,
+      unread: true,
       owner: { actor: { type: "human", id: "other" } },
+    },
+    {
+      key: "agent:research:dashboard:00000002-0000-4000-8000-000000000000",
+      agentId: "research",
+      kind: "direct",
+      label: "My research session",
+      updatedAt: 2000,
+      unread: true,
+      owner: { actor: { type: "human", id: "viewer" } },
+    },
+    {
+      key: "agent:research:main",
+      agentId: "research",
+      kind: "direct",
+      updatedAt: 1000,
+      hasActiveRun: true,
+      status: "running",
+      owner: { actor: { type: "human", id: "viewer" } },
     },
   ];
   const gateway = createGatewayHarness(
@@ -67,13 +92,10 @@ it("keeps My sessions across configured agents when viewing another user's sessi
   await sessions.refresh({ agentId: "main", force: true });
   const context = createContext(gateway.gateway, sessions, TWO_AGENTS);
   const provider = createApplicationContextProvider(context);
-  const sidebar = document.createElement("openclaw-app-sidebar");
-  if (!(sidebar instanceof AppSidebarSessionNavigationElement)) {
-    throw new Error("Expected registered sidebar");
-  }
+  const sidebar = await createSidebarElement();
   sidebar.activeRouteId = "chat";
   sidebar.sidebarAgentsMode = "chip";
-  provider.append(sidebar);
+  provider.append(sidebar.hostElement);
   document.body.append(provider);
   try {
     sidebar.connected = true;
@@ -92,7 +114,64 @@ it("keeps My sessions across configured agents when viewing another user's sessi
       expect(sidebar.getRouteSessionKey()).toBe(row.key);
       expect(sidebar.querySelector('[data-session-key="agent:main:mine"]')).not.toBeNull();
       expect(sidebar.querySelector('[data-session-key="agent:research:shared"]')).toBeNull();
+      expect(sidebar.querySelector(`[data-session-key="${rows[2]!.key}"]`)).not.toBeNull();
     }
+
+    bindChatPageSession(context, rows[0]!.key);
+    sidebar.sessionKey = rows[0]!.key;
+    await settleLitElement(sidebar);
+    await sidebar.sessionData.refreshSidebarSessions();
+    await settleLitElement(sidebar);
+
+    // A named owner has the same cross-agent scope as My sessions, even while
+    // the open conversation belongs to an agent where that owner has no rows.
+    await sidebar.sidebarMenus.preloadMenuRenderer();
+    await selectSessionMenuValue(sidebar, "status:all");
+    await selectSessionMenuValue(sidebar, "owner:other");
+    await settleLitElement(sidebar);
+    expect(sidebar.getRouteSessionKey()).toBe("agent:main:mine");
+    expect(sidebar.querySelector('[data-session-key="agent:research:shared"]')).not.toBeNull();
+    expect(sidebar.querySelector('[data-session-key="agent:main:mine"]')).toBeNull();
+    await selectSessionMenuValue(sidebar, "owner:viewer");
+
+    const onNavigate = vi.fn();
+    sidebar.onNavigate = onNavigate;
+    await sidebar.sidebarMenus.preloadMenuRenderer();
+    sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")!.click();
+    await settleLitElement(sidebar);
+    const researchMenuItem = sidebar.querySelector<HTMLElement>(
+      '.sidebar-agent-menu [data-value="agent:research"]',
+    )!;
+    expect.soft(researchMenuItem.querySelector('[aria-label="Unread"]')).not.toBeNull();
+    researchMenuItem.click();
+    await vi.waitFor(() =>
+      expect(onNavigate).toHaveBeenCalledWith(
+        "chat",
+        expect.objectContaining({
+          pathname: "/chat/research/00000002000040008000000000000000",
+        }),
+      ),
+    );
+
+    bindChatPageSession(context, rows[2]!.key);
+    sidebar.sessionKey = rows[2]!.key;
+    await settleLitElement(sidebar);
+    const home = sidebar.querySelector<HTMLElement>(".sidebar-footer-bar__home")!;
+    expect.soft(home.querySelector('[aria-label="Active run"]')).not.toBeNull();
+
+    rows[2]!.unread = false;
+    bindChatPageSession(context, rows[0]!.key);
+    sidebar.sessionKey = rows[0]!.key;
+    await settleLitElement(sidebar);
+    await sidebar.sessionData.refreshSidebarSessions();
+    await settleLitElement(sidebar);
+    sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")!.click();
+    await settleLitElement(sidebar);
+    expect(
+      sidebar.querySelector(
+        '.sidebar-agent-menu [data-value="agent:research"] [aria-label="Unread"]',
+      ),
+    ).toBeNull();
   } finally {
     provider.remove();
     context.connectionBootstrap.reset();

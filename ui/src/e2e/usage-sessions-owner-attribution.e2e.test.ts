@@ -12,8 +12,7 @@ import {
   type OpenClawTestState,
 } from "../../../src/test-utils/openclaw-test-state.ts";
 import { getFreePort } from "../../../src/test-utils/ports.ts";
-import type { ApplicationContext } from "../app/context.ts";
-import { COMMUNITY_INVITE_KEY } from "../components/community-invite-state.ts";
+import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -31,7 +30,7 @@ const PROOF_SESSION_ID = "tg-dm-owner-attribution-proof";
 const PROOF_STORE_KEY = "agent:main:telegram:dm";
 const PROOF_LABEL = "Telegram DM";
 
-async function capture(page: Page, name: string) {
+async function capture(page: Page, name: string, targetSuite = suite) {
   if (!captureUiProof) {
     return;
   }
@@ -39,14 +38,8 @@ async function capture(page: Page, name: string) {
   await page.screenshot({
     animations: "disabled",
     fullPage: true,
-    path: path.join(suite.artifactDir, name),
+    path: path.join(targetSuite.artifactDir, name),
   });
-}
-
-async function prepareUsageProofPage(page: Page) {
-  await page.addInitScript((key) => {
-    window.localStorage.setItem(key, JSON.stringify({ dismissedAtMs: 1770000000000 }));
-  }, COMMUNITY_INVITE_KEY);
 }
 
 async function dragTimelineRange(page: Page, fraction: number) {
@@ -72,12 +65,10 @@ async function requestGateway<T>(
   methodName: string,
   requestParams: Record<string, unknown>,
 ) {
-  return await page.evaluate(
-    async ({ method, params }) => {
-      const app = document.querySelector("openclaw-app") as
-        | (HTMLElement & { runtime?: { context: ApplicationContext } })
-        | null;
-      const client = app?.runtime?.context.gateway.snapshot.client;
+  return await evaluateControlUiContext(
+    page,
+    async (context, { method, params }) => {
+      const client = context.gateway.snapshot.client;
       if (!client) {
         throw new Error("Usage proof has no connected Gateway client");
       }
@@ -217,7 +208,6 @@ suite.define(() => {
               viewport,
             },
             async ({ page }) => {
-              await prepareUsageProofPage(page);
               const pageErrors: string[] = [];
               page.on("pageerror", (error) => pageErrors.push(String(error)));
 
@@ -265,81 +255,98 @@ suite.define(() => {
       });
     },
   );
+});
 
+let rangeState: OpenClawTestState;
+let rangePort: number;
+let rangeGateway: Promise<GatewayServer> | undefined;
+const rangeSuite = createControlUiE2eSuite({
+  name: "Control UI usage sessions owner attribution",
+  startServerBeforeBrowser: true,
+  unavailableMessage: (executablePath) =>
+    `Playwright Chromium is not available at ${executablePath}`,
+  resources: {
+    retainedState: () => rangeState?.root,
+    async run(signal) {
+      rangePort = await getFreePort();
+      signal.throwIfAborted();
+      const state = await createOpenClawTestState({
+        label: "usage-detail-instance",
+        env: {
+          OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+          OPENCLAW_SKIP_CANVAS_HOST: "1",
+          OPENCLAW_SKIP_CHANNELS: "1",
+          OPENCLAW_SKIP_CRON: "1",
+          OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+          OPENCLAW_SKIP_PROVIDERS: "1",
+          OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+          VITEST: "1",
+        },
+      });
+      rangeState = state;
+      setLoggerOverride({
+        file: state.path("gateway.log"),
+        level: "silent",
+        consoleLevel: "silent",
+      });
+      signal.throwIfAborted();
+      await state.writeConfig({
+        agents: {
+          ownership: "explicit",
+          defaults: { workspace: state.workspaceDir },
+          entries: { main: {}, opus: {} },
+        },
+        gateway: {
+          mode: "local",
+          port: rangePort,
+          bind: "loopback",
+          auth: { mode: "none" },
+          controlUi: { enabled: false },
+        },
+        plugins: { enabled: false },
+      });
+      const { startGatewayServer } = await import("../../../src/gateway/server.js");
+      const { ensureGatewayOwnerProfile } = await import("../../../src/state/user-profiles.js");
+      ensureGatewayOwnerProfile("Usage Proof", { env: state.env });
+      signal.throwIfAborted();
+      rangeGateway = startGatewayServer(rangePort, {
+        auth: { mode: "none" },
+        bind: "loopback",
+        controlUiEnabled: false,
+        sidecarStartup: "defer",
+      });
+      await rangeGateway;
+      signal.throwIfAborted();
+    },
+    async close() {
+      await (await rangeGateway)?.close({ reason: "usage detail instance e2e cleanup" });
+    },
+    async release() {
+      await rangeState?.cleanup();
+      resetLogger();
+    },
+  },
+});
+
+rangeSuite.define(() => {
   it.for([1, 2])(
     "clears ranges after session recreation (%s points)",
     async (pointCount, context) => {
-      let fixture: OpenClawTestState | undefined;
-      let gateway: Promise<GatewayServer> | undefined;
       let restoreClock: (() => void) | undefined;
-      await suite.runScenario(context, {
-        retainedState: () => fixture?.root,
-        close: async () => {
-          await (await gateway)?.close({ reason: "usage detail instance e2e cleanup" });
-        },
+      await rangeSuite.runScenario(context, {
         release: async () => {
           restoreClock?.();
-          await fixture?.cleanup();
-          resetLogger();
         },
         run: async (signal) => {
-          const port = await getFreePort();
-          signal.throwIfAborted();
-          const state = await createOpenClawTestState({
-            label: "usage-detail-instance",
-            env: {
-              OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
-              OPENCLAW_SKIP_CANVAS_HOST: "1",
-              OPENCLAW_SKIP_CHANNELS: "1",
-              OPENCLAW_SKIP_CRON: "1",
-              OPENCLAW_SKIP_GMAIL_WATCHER: "1",
-              OPENCLAW_SKIP_PROVIDERS: "1",
-              OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
-              VITEST: "1",
-            },
-          });
-          fixture = state;
-          setLoggerOverride({
-            file: state.path("gateway.log"),
-            level: "silent",
-            consoleLevel: "silent",
-          });
-          signal.throwIfAborted();
-          await state.writeConfig({
-            agents: {
-              ownership: "explicit",
-              defaults: { workspace: state.workspaceDir },
-              entries: { main: {}, opus: {} },
-            },
-            gateway: {
-              mode: "local",
-              port,
-              bind: "loopback",
-              auth: { mode: "none" },
-              controlUi: { enabled: false },
-            },
-            plugins: { enabled: false },
-          });
-          const { startGatewayServer } = await import("../../../src/gateway/server.js");
+          const state = rangeState;
+          const port = rangePort;
           const { persistSessionTranscriptTurn } =
             await import("../../../src/config/sessions/session-accessor.js");
-          const { ensureGatewayOwnerProfile } = await import("../../../src/state/user-profiles.js");
-          ensureGatewayOwnerProfile("Usage Proof", { env: state.env });
-          signal.throwIfAborted();
-          gateway = startGatewayServer(port, {
-            auth: { mode: "none" },
-            bind: "loopback",
-            controlUiEnabled: false,
-            sidecarStartup: "defer",
-          });
-          await gateway;
-          signal.throwIfAborted();
 
-          await suite.withPage(
+          await rangeSuite.withPage(
             { locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", viewport },
             async ({ page }) => {
-              await prepareUsageProofPage(page);
-              const key = "agent:opus:usage-instance-proof";
+              const key = `agent:opus:usage-instance-proof-${pointCount}`;
               const gatewayUrl = new URL(`ws://127.0.0.1:${port}`).href;
               const pageErrors: string[] = [];
               const overviewRequests = new Map<string, Record<string, unknown>>();
@@ -399,7 +406,7 @@ suite.define(() => {
                   });
                 });
               });
-              const url = new URL("settings/general", suite.server.baseUrl);
+              const url = new URL("settings/general", rangeSuite.server.baseUrl);
               url.searchParams.set("gatewayUrl", gatewayUrl);
               await page.goto(url.toString());
               await page
@@ -418,7 +425,7 @@ suite.define(() => {
                 }>(page, "sessions.create", {
                   key,
                   agentId: "opus",
-                  label: `${label} usage session`,
+                  label: `${label} usage session (${pointCount} points)`,
                 });
                 expect(created.ok).toBe(true);
                 expect(created.key).toBe(key);
@@ -468,7 +475,7 @@ suite.define(() => {
                 timestamp,
                 timestamp + 1_000,
               ]);
-              await page.goto(new URL("usage", suite.server.baseUrl).toString());
+              await page.goto(new URL("usage", rangeSuite.server.baseUrl).toString());
               await waitForControlUiGatewayReady(page);
               const selected = page.locator(
                 `.session-bar-row[title="${key}"] .session-bar-selection`,
@@ -494,7 +501,7 @@ suite.define(() => {
               if (pointCount === 1) {
                 await page.mouse.up();
               }
-              await capture(page, "01-original-instance-details.png");
+              await capture(page, "01-original-instance-details.png", rangeSuite);
               const selectedConnections = connections;
 
               const deleted = await requestGateway<{ deleted: boolean }>(page, "sessions.delete", {
@@ -543,7 +550,7 @@ suite.define(() => {
               await page.evaluate(() => window.dispatchEvent(new Event("focus")));
               await expect
                 .poll(() => panel.locator(".session-detail-title").textContent())
-                .toContain("Replacement usage session");
+                .toContain(`Replacement usage session (${pointCount} points)`);
               await expect
                 .poll(() => panel.locator(".session-detail-stats").textContent())
                 .toContain(String(pointCount * 300));
@@ -553,13 +560,15 @@ suite.define(() => {
               expect(await selectedReplacement.count()).toBe(1);
               expect(await selectedReplacement.getAttribute("aria-pressed")).toBe("true");
               expect(await selectedReplacement.getAttribute("aria-label")).toBe(
-                "Replacement usage session",
+                `Replacement usage session (${pointCount} points)`,
               );
-              expect(
-                observedOverviews
-                  .slice(focusOverviewStart)
-                  .some((overview) => overview.session?.sessionId === replacementId),
-              ).toBe(true);
+              await expect
+                .poll(() =>
+                  observedOverviews
+                    .slice(focusOverviewStart)
+                    .some((overview) => overview.session?.sessionId === replacementId),
+                )
+                .toBe(true);
               expect(connections).toBe(selectedConnections);
               if (pointCount === 2) {
                 await moveOriginalRange();
@@ -576,12 +585,12 @@ suite.define(() => {
                 expect(await panel.locator(".timeseries-summary__range").count()).toBe(0);
               } finally {
                 await page.mouse.up();
-                await capture(page, "02-replacement-instance-details.png");
+                await capture(page, "02-replacement-instance-details.png", rangeSuite);
                 await panel.locator(".session-logs-compact").scrollIntoViewIfNeeded();
-                await capture(page, "03-replacement-instance-conversation.png");
+                await capture(page, "03-replacement-instance-conversation.png", rangeSuite);
                 if (captureUiProof) {
                   await writeFile(
-                    path.join(suite.artifactDir, "instance-replacement.json"),
+                    path.join(rangeSuite.artifactDir, "instance-replacement.json"),
                     JSON.stringify({
                       key,
                       agentId: "opus",
