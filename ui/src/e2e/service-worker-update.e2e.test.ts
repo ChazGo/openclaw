@@ -10,11 +10,16 @@ import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../src/gateway/control-u
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import {
+  waitForControlUiGatewayReady,
+  waitForControlUiTerminalReady,
+} from "../test-helpers/control-ui-e2e-readiness.ts";
+import {
   createControlUiMockBootstrapConfig,
   canRunPlaywrightChromium,
   captureControlUiE2eFailureDiagnostics,
   controlUiE2eWaitTimeoutMs,
   installMockGateway,
+  refreshProductionControlUiE2e,
   resolvePlaywrightChromiumExecutablePath,
   startProductionControlUiE2eServer,
   type ControlUiE2eProductionServer,
@@ -48,27 +53,13 @@ type InstallGate = {
 let browser: Browser;
 let outDir: string;
 let server: ControlUiE2eProductionServer;
-let buildBPromise: Promise<void> | undefined;
 
 async function stageBuildB(destination: string): Promise<void> {
-  const pristineDir = `${outDir}-build-b`;
-  buildBPromise ??= (async () => {
-    const { refreshControlUiBuildOutput, resolveControlUiBuildInfo } =
-      await import("../../vite.config.ts");
-    // This deployment changes identity, not source; keep the real build-owned worker and manifest.
-    await cp(outDir, pristineDir, { recursive: true, dereference: true });
-    await refreshControlUiBuildOutput(
-      pristineDir,
-      resolveControlUiBuildInfo({
-        env: { ...process.env, OPENCLAW_CONTROL_UI_BUILD_ID: buildB },
-      }),
-    );
-  })();
-  await buildBPromise;
   await rm(destination, { force: true, recursive: true });
   try {
     // Each deployment owns its bytes; the terminal case modifies its worker.
-    await cp(pristineDir, destination, { recursive: true, dereference: true });
+    await cp(outDir, destination, { recursive: true, dereference: true });
+    await refreshProductionControlUiE2e(destination, buildB);
   } catch (error) {
     await rm(destination, { force: true, recursive: true });
     throw error;
@@ -373,7 +364,7 @@ describe("Control UI service-worker production update E2E", () => {
       } finally {
         if (outDir) {
           await Promise.all(
-            ["", "-build-b", "-next", "-previous", "-foreground", "-sleeping"].map((suffix) =>
+            ["", "-next", "-previous", "-foreground", "-sleeping"].map((suffix) =>
               rm(`${outDir}${suffix}`, { force: true, recursive: true }),
             ),
           );
@@ -579,11 +570,7 @@ describe("Control UI service-worker production update E2E", () => {
         .poll(
           async () =>
             evaluateControlUiContext(page, (application) => {
-              const panel = document.querySelector("openclaw-terminal-panel") as
-                | (HTMLElement & { available: boolean })
-                | null;
               return {
-                available: panel?.available ?? null,
                 phase: application.gateway.snapshot.phase,
                 terminalEnabled: application.config.current.terminalEnabled,
                 hasHello: application.gateway.snapshot.hello !== null,
@@ -592,11 +579,11 @@ describe("Control UI service-worker production update E2E", () => {
           { timeout: controlUiE2eWaitTimeoutMs },
         )
         .toMatchObject({
-          available: true,
           phase: "connected",
           terminalEnabled: true,
           hasHello: true,
         });
+      await waitForControlUiTerminalReady(page);
 
       const assetA = await findBuildAsset(buildA);
       const cacheA = await readBuildCacheName(buildA);
@@ -617,12 +604,12 @@ describe("Control UI service-worker production update E2E", () => {
       expect(assetB).toEqual(assetA);
 
       await gateway.setOnline(false);
-      await page.waitForFunction(() => {
-        const panel = document.querySelector("openclaw-terminal-panel") as
-          | (HTMLElement & { available: boolean; gatewayConnected: boolean })
-          | null;
-        return panel?.available === true && !panel.gatewayConnected;
-      });
+      await expect
+        .poll(
+          () => evaluateControlUiContext(page, (application) => application.gateway.snapshot.phase),
+          { timeout: controlUiE2eWaitTimeoutMs },
+        )
+        .not.toBe("connected");
       await server.replaceBuild(nextOutDir, previousOutDir);
       await rm(previousOutDir, { force: true, recursive: true });
       // Assets and Gateway identity advance together in a deployment. Publish
@@ -638,12 +625,8 @@ describe("Control UI service-worker production update E2E", () => {
         const registration = await navigator.serviceWorker.getRegistration();
         return registration?.installing?.state === "installing";
       });
-      await page.waitForFunction(() => {
-        const panel = document.querySelector("openclaw-terminal-panel") as
-          | (HTMLElement & { available: boolean; gatewayConnected: boolean })
-          | null;
-        return panel?.available === true && panel.gatewayConnected;
-      });
+      await waitForControlUiGatewayReady(page);
+      await waitForControlUiTerminalReady(page);
       await page.evaluate(() => {
         window.dispatchEvent(
           new CustomEvent("openclaw:terminal-toggle", {

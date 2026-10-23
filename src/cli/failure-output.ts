@@ -190,24 +190,20 @@ export function formatCliJsonFailure(
   };
 }
 
-function hasDebugArg(argv: string[] | undefined): boolean {
+function shouldShowDebugDetails(
+  argv: string[] | undefined = process.argv,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
   for (const arg of argv ?? []) {
     // Arguments after the terminator belong to the child, not root stack-trace policy.
     if (arg === "--") {
-      return false;
+      break;
     }
     if (arg === "--debug" || arg === "--verbose") {
       return true;
     }
   }
-  return false;
-}
-
-function shouldShowDebugDetails(
-  argv: string[] | undefined = process.argv,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return hasDebugArg(argv) || isTruthyEnvValue(env.OPENCLAW_DEBUG);
+  return isTruthyEnvValue(env.OPENCLAW_DEBUG);
 }
 
 export function formatCliOperatorError(
@@ -218,14 +214,6 @@ export function formatCliOperatorError(
   const value =
     !includeCause && error instanceof Error ? error.message || error.name || "Error" : error;
   return formatErrorMessage(value);
-}
-
-function pushPrefixed(out: string[], value: string): void {
-  for (const line of value.split("\n")) {
-    if (line.trim().length > 0) {
-      out.push(`[openclaw] ${line}`);
-    }
-  }
 }
 
 export function formatCliFailureLines(options: FormatCliFailureOptions): string[] {
@@ -308,7 +296,11 @@ export function formatCliFailureLines(options: FormatCliFailureOptions): string[
 
   if (showDebugDetails) {
     lines.push("[openclaw] Stack:");
-    pushPrefixed(lines, formatUncaughtError(options.error));
+    for (const line of formatUncaughtError(options.error).split("\n")) {
+      if (line.trim().length > 0) {
+        lines.push(`[openclaw] ${line}`);
+      }
+    }
   }
 
   // Doctor needs the same state owner; inspect wrappers without loading the SQLite runtime.

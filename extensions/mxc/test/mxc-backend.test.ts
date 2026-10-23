@@ -43,6 +43,7 @@ vi.mock("node:child_process", () => ({
   execFileSync: execFileSyncMock,
 }));
 
+// mock-isolation: Backend command tests must control completion without launching MXC.
 vi.mock("openclaw/plugin-sdk/process-runtime", () => ({
   runCommandBuffered: spawnCommandMock,
 }));

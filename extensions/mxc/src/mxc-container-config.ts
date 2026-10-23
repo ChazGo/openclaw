@@ -15,7 +15,6 @@ import type {
 } from "./sandbox-policy-loader.js";
 import { buildCommandLine } from "./windows-command.js";
 import { normalizeWindowsProcessEnvRecord } from "./windows-env.js";
-
 type FilesystemPathSpec = {
   path: string;
   required: boolean;
@@ -23,7 +22,6 @@ type FilesystemPathSpec = {
 };
 
 type BaselineApplicationContext = {
-  projectDir: string;
   hostEnv: BaselineHostEnv;
 };
 
@@ -36,9 +34,8 @@ type MxcWorkspaceContext = {
   workspaceAccess: SandboxContext["workspaceAccess"];
 };
 
-export function resolveCurrentBaselineContext(projectDir: string): BaselineApplicationContext {
+export function resolveCurrentBaselineContext(): BaselineApplicationContext {
   return {
-    projectDir: path.resolve(projectDir),
     hostEnv: {
       SystemRoot: process.env.SystemRoot,
       WINDIR: process.env.WINDIR,
@@ -99,13 +96,49 @@ export function buildMxcContainerRequest(params: {
   env: Record<string, string>;
 }): ContainerRequest {
   const networkAllowed = params.config.network === "default";
-  const filesystem = buildFilesystemPolicy({
-    baseline: params.baseline,
-    context: params.baselineContext,
-    sandboxTempDir: params.sandboxTempDir,
-    workspace: params.workspace,
+  const readwritePathSpecs: FilesystemPathSpec[] = [];
+  const readonlyPathSpecs: FilesystemPathSpec[] = [];
+  const workspace = params.workspace;
+  const protectedSkillPolicyPaths = resolveMxcProtectedSkillPolicyPaths(workspace);
+  if (workspace.workspaceAccess === "rw") {
+    readwritePathSpecs.push(requiredFilesystemPath(workspace.activeWorkspaceDir));
+  } else {
+    readonlyPathSpecs.push(requiredFilesystemPath(workspace.workspaceDir));
+    if (
+      workspace.workspaceAccess === "ro" &&
+      normalizeMxcPathForComparison(workspace.agentWorkspaceDir) !==
+        normalizeMxcPathForComparison(workspace.workspaceDir)
+    ) {
+      readonlyPathSpecs.push(requiredFilesystemPath(workspace.agentWorkspaceDir));
+    }
+  }
+  readonlyPathSpecs.push(
+    ...resolveBaselineReadonlyPaths(params.baselineContext.hostEnv).map(optionalFilesystemPath),
+    ...params.baseline.configuredPaths.readonlyPaths.map(createConfiguredFilesystemPath),
+    ...protectedSkillPolicyPaths.map(optionalFilesystemPath),
+  );
+
+  readwritePathSpecs.push(requiredFilesystemPath(params.sandboxTempDir));
+  readwritePathSpecs.push(
+    ...params.baseline.configuredPaths.readwritePaths.map(createConfiguredFilesystemPath),
+  );
+
+  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
+  // ProcessContainer writable-parent grants override nested read-only grants.
+  // Fail closed instead of claiming protected skill overlays are enforceable.
+  assertNoMxcReadwriteReadonlyOverlap({
+    readwritePaths,
+    readonlyPaths: protectedSkillPolicyPaths,
   });
 
+  const readonlyPaths = resolveExistingFilesystemPaths(readonlyPathSpecs, "read-only");
+  assertNoMxcReadwriteReadonlyOverlap({ readwritePaths, readonlyPaths });
+
+  const filesystem: FilesystemPolicy = {
+    readonlyPaths,
+    readwritePaths,
+    clearPolicyOnExit: true,
+  };
   const environment = normalizeWindowsProcessEnvRecord({
     ...params.env,
     TEMP: params.sandboxTempDir,
@@ -119,7 +152,10 @@ export function buildMxcContainerRequest(params: {
     // variables outside the minimal Windows defaults never reach the child.
     environment,
     inheritDefaultEnvironment: false,
-    timeoutMs: resolveProcessTimeoutSeconds(params.config, params.baseline) * 1000,
+    timeoutMs:
+      (params.config.timeoutSecondsConfigured === true
+        ? Math.min(params.config.timeoutSeconds, params.baseline.process.timeoutSeconds)
+        : params.baseline.process.timeoutSeconds) * 1000,
     containerName: params.containerName,
     // Both configured containments have always meant the Windows
     // ProcessContainer backend; only the explicit form accepts its UI block.
@@ -146,64 +182,6 @@ export function buildMxcContainerRequest(params: {
       egress: { default: networkAllowed ? "allow" : "deny" },
       ingress: { default: "deny", hostLoopback: "deny" },
     },
-  };
-}
-
-function buildFilesystemPolicy(params: {
-  baseline: LoadedSandboxBaselinePolicy;
-  context: BaselineApplicationContext;
-  sandboxTempDir: string;
-  workspace: MxcWorkspaceContext;
-}): FilesystemPolicy {
-  const readwritePathSpecs: FilesystemPathSpec[] = [];
-  const readonlyPathSpecs: FilesystemPathSpec[] = [];
-  const workspace = params.workspace;
-  const protectedSkillPolicyPaths = resolveMxcProtectedSkillPolicyPaths(workspace);
-  if (workspace.workspaceAccess === "rw") {
-    readwritePathSpecs.push(requiredFilesystemPath(workspace.activeWorkspaceDir));
-  } else {
-    readonlyPathSpecs.push(requiredFilesystemPath(workspace.workspaceDir));
-    if (
-      workspace.workspaceAccess === "ro" &&
-      normalizeMxcPathForComparison(workspace.agentWorkspaceDir) !==
-        normalizeMxcPathForComparison(workspace.workspaceDir)
-    ) {
-      readonlyPathSpecs.push(requiredFilesystemPath(workspace.agentWorkspaceDir));
-    }
-  }
-  readonlyPathSpecs.push(
-    ...resolveBaselineReadonlyPaths(params.context.hostEnv).map(optionalFilesystemPath),
-    ...params.baseline.configuredPaths.readonlyPaths.map(createConfiguredFilesystemPath),
-    ...protectedSkillPolicyPaths.map(optionalFilesystemPath),
-  );
-
-  // Policy admission accepts only restrictToProjectDir=true.
-  const projectDirPath = params.context.projectDir;
-  if (params.workspace.workspaceAccess === "rw") {
-    readwritePathSpecs.push(requiredFilesystemPath(projectDirPath));
-  } else {
-    readonlyPathSpecs.push(requiredFilesystemPath(projectDirPath));
-  }
-  readwritePathSpecs.push(requiredFilesystemPath(params.sandboxTempDir));
-  readwritePathSpecs.push(
-    ...params.baseline.configuredPaths.readwritePaths.map(createConfiguredFilesystemPath),
-  );
-
-  const readwritePaths = resolveExistingFilesystemPaths(readwritePathSpecs, "readwrite");
-  // ProcessContainer writable-parent grants override nested read-only grants.
-  // Fail closed instead of claiming protected skill overlays are enforceable.
-  assertNoMxcReadwriteReadonlyOverlap({
-    readwritePaths,
-    readonlyPaths: protectedSkillPolicyPaths,
-  });
-
-  const readonlyPaths = resolveExistingFilesystemPaths(readonlyPathSpecs, "read-only");
-  assertNoMxcReadwriteReadonlyOverlap({ readwritePaths, readonlyPaths });
-
-  return {
-    readonlyPaths,
-    readwritePaths,
-    clearPolicyOnExit: true,
   };
 }
 
@@ -303,16 +281,6 @@ function buildMissingFilesystemPathMessage(
     );
   }
   return `MXC sandbox ${accessLabel} path ${pathValue} does not exist on the host.`;
-}
-
-function resolveProcessTimeoutSeconds(
-  config: MxcConfig,
-  baseline: LoadedSandboxBaselinePolicy,
-): number {
-  if (config.timeoutSecondsConfigured === true) {
-    return Math.min(config.timeoutSeconds, baseline.process.timeoutSeconds);
-  }
-  return baseline.process.timeoutSeconds;
 }
 
 function assertNoMxcReadwriteReadonlyOverlap(params: {

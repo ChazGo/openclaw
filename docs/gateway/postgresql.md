@@ -451,6 +451,7 @@ memory-index sidecars. Upgrade older shared state with a compatible binary and
 Doctor before retrying. Agent schema upgrades can run in the port's private copy.
 A scoped port checks only migrations declared for that family. Fresh Matrix
 roots without legacy inbound-dedupe rows do not require a completion receipt.
+Port also refuses reserved-incognito session keys: run `openclaw doctor --fix` on the SQLite installation before retrying; PostgreSQL Doctor leaves such stores unchanged and requires re-adoption from a repaired SQLite source.
 
 Provision PostgreSQL and add `database.postgres.connection`, but leave the source
 engine selections unchanged. Stop the Gateway through its service owner and stop
@@ -695,16 +696,22 @@ or restore a matched backup. Never edit version/fingerprint metadata. Doctor's
 state migrations take their own exact backup before mutation.
 
 First boot, ports, rebuilds, and migrations can take longer on slow disks or a
-remote server. Connection and lock waits allow 60 seconds; the engine sets a
-90-second statement timeout and a 120-second synchronous bridge deadline.
-These are not per-operation config options. A timeout is a failure to investigate,
-not permission to delete recovery state. Inspect server load, locks, network, and
-storage, and retry only after resolving the reported cause.
+remote server. Connection waits allow 60 seconds. On its own connections,
+OpenClaw sets session-level `lock_timeout` to 60 seconds and `statement_timeout`
+to 90 seconds. These liveness bounds override role and database defaults; the
+synchronous bridge also has a 120-second deadline. These are not per-operation
+config options. A timeout is a failure to investigate, not permission to delete
+recovery state. Inspect server load, locks, network, and storage, and retry only
+after resolving the reported cause.
 
-The runtime sets `synchronous_commit=off`, matching the intended SQLite
-`synchronous=NORMAL` tradeoff. A PostgreSQL server or operating-system crash can
-lose recently acknowledged commits. Plan backups and recovery objectives with
-that durability policy in mind.
+OpenClaw inherits the operator's `synchronous_commit` and other durability
+settings. PostgreSQL's default `on` makes acknowledged commits durable across
+PostgreSQL or operating-system crashes. For SQLite WAL
+`synchronous=NORMAL`-like throughput, operators can opt in
+with `ALTER ROLE <openclaw_role> SET synchronous_commit = off` or the equivalent
+`ALTER DATABASE` setting. This can lose recently acknowledged commits on a server
+or operating-system crash, without corruption. Ports and backups always commit
+durably.
 
 ## Search on PostgreSQL
 
@@ -865,9 +872,11 @@ follow a prefix):
 Connection loss closes the failed connection. The engine distinguishes a known
 rolled-back transaction from an uncertain outcome, invalidating cached facts
 when a commit may have occurred. It does not switch to SQLite or promise
-transparent replay of every operation. Recover server connectivity, inspect the
-operation's recorded result, and restart the Gateway through its service owner
-if needed to reopen stores.
+transparent replay of every operation. The shared-state worker retires its failed
+connection so a subsequent operation can reopen the store once PostgreSQL is
+available. The interrupted operation is not replayed. Recover server connectivity
+and inspect the operation's recorded result before repeating an external effect.
+If another store remains unavailable, restart the Gateway through its service owner.
 
 ## Roll back to SQLite
 
